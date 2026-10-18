@@ -231,6 +231,8 @@ fi
 # --- done --------------------------------------------------------------------
 
 mkdir -p "$state"
+# Vorssaint's Update button runs this installer from here (patch 02-update-hook).
+printf '%s\n' "$here/install" >"$state/installer"
 printf '{ "version": "%s", "patch": "%s", "installed": "%s" }\n' \
     "$target" "${patch:-candidate-$candidate}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$state/installed.json"
 
