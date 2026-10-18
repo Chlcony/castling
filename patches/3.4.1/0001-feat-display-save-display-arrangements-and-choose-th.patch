@@ -1,4 +1,4 @@
-From dbfb7a90e0a53ab69234d3da7820260b8604da32 Mon Sep 17 00:00:00 2001
+From ed7fc8860f12e44213d61d8008923e73e1abd452 Mon Sep 17 00:00:00 2001
 From: Chlcony <72945153+Chlcony@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 02:08:36 +0300
 Subject: [PATCH] feat(display): save display arrangements and choose the main
@@ -9,12 +9,12 @@ a star beside each display that makes it the main one. Applying an
 arrangement moves the screens and keeps the current main display;
 starring a display changes the main display and keeps the arrangement.
 ---
- .../Display/DisplayArrangementService.swift   | 271 ++++++++++++++++
- .../Display/DisplayArrangementStrings.swift   | 307 ++++++++++++++++++
- .../Display/DisplayArrangementSupport.swift   | 227 +++++++++++++
- .../UI/MenuPanel/ArrangementStrip.swift       | 290 +++++++++++++++++
- .../UI/MenuPanel/BrightnessSection.swift      |  12 +-
- 5 files changed, 1106 insertions(+), 1 deletion(-)
+ .../Display/DisplayArrangementService.swift   | 286 +++++++++++++++
+ .../Display/DisplayArrangementStrings.swift   | 323 +++++++++++++++++
+ .../Display/DisplayArrangementSupport.swift   | 227 ++++++++++++
+ .../UI/MenuPanel/ArrangementStrip.swift       | 329 ++++++++++++++++++
+ .../UI/MenuPanel/BrightnessSection.swift      |  17 +-
+ 5 files changed, 1181 insertions(+), 1 deletion(-)
  create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
  create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
  create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift
@@ -22,10 +22,10 @@ starring a display changes the main display and keeps the arrangement.
 
 diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementService.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
 new file mode 100644
-index 00000000..267926c0
+index 00000000..10ccc5f5
 --- /dev/null
 +++ b/Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,286 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -42,6 +42,12 @@ index 00000000..267926c0
 +/// `CGDisplayBounds` and written inside a `CGBeginDisplayConfiguration`
 +/// transaction. The main display is the one at the origin, so origins alone
 +/// carry both the layout and the menu bar's home.
++/// A connected display as the star needs it: which one, and what to call it.
++struct ConnectedDisplay: Identifiable, Equatable {
++    let id: CGDirectDisplayID
++    let name: String
++}
++
 +final class DisplayArrangementService: ObservableObject {
 +    static let shared = DisplayArrangementService()
 +
@@ -57,6 +63,10 @@ index 00000000..267926c0
 +    @Published private(set) var presets: [DisplayArrangementPreset] = []
 +    @Published private(set) var activePresetID: UUID?
 +    @Published private(set) var connectedKeys: Set<String> = []
++    /// Every display that has a place in the arrangement, in system order.
++    /// The Displays section only lists the ones it can adjust, so this is how
++    /// a display without a brightness route, like Sidecar, still gets a star.
++    @Published private(set) var connectedDisplays: [ConnectedDisplay] = []
 +    /// Which display currently owns the menu bar. Published rather than read
 +    /// from CoreGraphics in a view body: asking the display server from a body
 +    /// that may itself be laid out inside a reconfiguration is how issue #969
@@ -111,6 +121,11 @@ index 00000000..267926c0
 +        }
 +        let current = Self.currentSlots()
 +        connectedKeys = Set(current.map(\.key))
++        connectedDisplays = NSScreen.screens.compactMap { screen in
++            let id = screen.displayID
++            guard id != 0, CGDisplayMirrorsDisplay(id) == 0 else { return nil }
++            return ConnectedDisplay(id: id, name: screen.localizedName)
++        }
 +        activePresetID = DisplayArrangementSupport.activePreset(in: presets, current: current)
 +        mainDisplayID = NSScreen.screens.first { CGDisplayBounds($0.displayID).origin == .zero }?
 +            .displayID
@@ -299,10 +314,10 @@ index 00000000..267926c0
 +}
 diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
 new file mode 100644
-index 00000000..c2fbf5de
+index 00000000..6d4589df
 --- /dev/null
 +++ b/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,323 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -330,6 +345,7 @@ index 00000000..c2fbf5de
 +    let currentArrangement: String
 +    let mainDisplay: String
 +    let makeMainDisplay: String
++    let brightnessUnavailable: String
 +}
 +
 +extension FeatureStrings {
@@ -369,7 +385,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d displays",
 +        currentArrangement: "Current arrangement",
 +        mainDisplay: "Main display",
-+        makeMainDisplay: "Make this the main display"
++        makeMainDisplay: "Make this the main display",
++        brightnessUnavailable: "Brightness can't be adjusted on this display"
 +    )
 +
 +    static let ptBR = DisplayArrangementStrings(
@@ -386,7 +403,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d telas",
 +        currentArrangement: "Disposição atual",
 +        mainDisplay: "Tela principal",
-+        makeMainDisplay: "Tornar esta a tela principal"
++        makeMainDisplay: "Tornar esta a tela principal",
++        brightnessUnavailable: "O brilho desta tela não pode ser ajustado"
 +    )
 +
 +    static let tr = DisplayArrangementStrings(
@@ -403,7 +421,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d ekran",
 +        currentArrangement: "Geçerli düzen",
 +        mainDisplay: "Ana ekran",
-+        makeMainDisplay: "Bunu ana ekran yap"
++        makeMainDisplay: "Bunu ana ekran yap",
++        brightnessUnavailable: "Bu ekranın parlaklığı ayarlanamıyor"
 +    )
 +
 +    static let ru = DisplayArrangementStrings(
@@ -420,7 +439,8 @@ index 00000000..c2fbf5de
 +        displayCount: "Мониторов: %1$d",
 +        currentArrangement: "Текущее расположение",
 +        mainDisplay: "Главный монитор",
-+        makeMainDisplay: "Сделать главным монитором"
++        makeMainDisplay: "Сделать главным монитором",
++        brightnessUnavailable: "Яркость этого монитора нельзя настроить"
 +    )
 +
 +    static let uk = DisplayArrangementStrings(
@@ -437,7 +457,8 @@ index 00000000..c2fbf5de
 +        displayCount: "Дисплеїв: %1$d",
 +        currentArrangement: "Поточне розташування",
 +        mainDisplay: "Основний дисплей",
-+        makeMainDisplay: "Зробити основним дисплеєм"
++        makeMainDisplay: "Зробити основним дисплеєм",
++        brightnessUnavailable: "Яскравість цього дисплея не можна налаштувати"
 +    )
 +
 +    static let es = DisplayArrangementStrings(
@@ -454,7 +475,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d pantallas",
 +        currentArrangement: "Disposición actual",
 +        mainDisplay: "Pantalla principal",
-+        makeMainDisplay: "Convertir en pantalla principal"
++        makeMainDisplay: "Convertir en pantalla principal",
++        brightnessUnavailable: "No se puede ajustar el brillo de esta pantalla"
 +    )
 +
 +    static let sk = DisplayArrangementStrings(
@@ -471,7 +493,8 @@ index 00000000..c2fbf5de
 +        displayCount: "Displeje: %1$d",
 +        currentArrangement: "Aktuálne usporiadanie",
 +        mainDisplay: "Hlavný displej",
-+        makeMainDisplay: "Nastaviť ako hlavný displej"
++        makeMainDisplay: "Nastaviť ako hlavný displej",
++        brightnessUnavailable: "Jas tohto displeja sa nedá upraviť"
 +    )
 +
 +    static let de = DisplayArrangementStrings(
@@ -488,7 +511,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d Displays",
 +        currentArrangement: "Aktuelle Anordnung",
 +        mainDisplay: "Hauptdisplay",
-+        makeMainDisplay: "Zum Hauptdisplay machen"
++        makeMainDisplay: "Zum Hauptdisplay machen",
++        brightnessUnavailable: "Die Helligkeit dieses Displays lässt sich nicht anpassen"
 +    )
 +
 +    static let fr = DisplayArrangementStrings(
@@ -505,7 +529,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d écrans",
 +        currentArrangement: "Disposition actuelle",
 +        mainDisplay: "Écran principal",
-+        makeMainDisplay: "Définir comme écran principal"
++        makeMainDisplay: "Définir comme écran principal",
++        brightnessUnavailable: "La luminosité de cet écran ne peut pas être réglée"
 +    )
 +
 +    static let it = DisplayArrangementStrings(
@@ -522,7 +547,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d schermi",
 +        currentArrangement: "Disposizione attuale",
 +        mainDisplay: "Schermo principale",
-+        makeMainDisplay: "Rendi questo lo schermo principale"
++        makeMainDisplay: "Rendi questo lo schermo principale",
++        brightnessUnavailable: "La luminosità di questo schermo non può essere regolata"
 +    )
 +
 +    static let ja = DisplayArrangementStrings(
@@ -539,7 +565,8 @@ index 00000000..c2fbf5de
 +        displayCount: "ディスプレイ %1$d 台",
 +        currentArrangement: "現在の配置",
 +        mainDisplay: "メインディスプレイ",
-+        makeMainDisplay: "このディスプレイをメインにする"
++        makeMainDisplay: "このディスプレイをメインにする",
++        brightnessUnavailable: "このディスプレイの明るさは調整できません"
 +    )
 +
 +    static let ko = DisplayArrangementStrings(
@@ -556,7 +583,8 @@ index 00000000..c2fbf5de
 +        displayCount: "디스플레이 %1$d대",
 +        currentArrangement: "현재 배열",
 +        mainDisplay: "주 디스플레이",
-+        makeMainDisplay: "이 디스플레이를 주 디스플레이로 설정"
++        makeMainDisplay: "이 디스플레이를 주 디스플레이로 설정",
++        brightnessUnavailable: "이 디스플레이의 밝기는 조절할 수 없습니다"
 +    )
 +
 +    static let zhHans = DisplayArrangementStrings(
@@ -573,7 +601,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d 台显示器",
 +        currentArrangement: "当前排列",
 +        mainDisplay: "主显示器",
-+        makeMainDisplay: "将此显示器设为主显示器"
++        makeMainDisplay: "将此显示器设为主显示器",
++        brightnessUnavailable: "无法调节此显示器的亮度"
 +    )
 +
 +    static let zhTW = DisplayArrangementStrings(
@@ -590,7 +619,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d 部顯示器",
 +        currentArrangement: "目前排列",
 +        mainDisplay: "主顯示器",
-+        makeMainDisplay: "將此顯示器設為主顯示器"
++        makeMainDisplay: "將此顯示器設為主顯示器",
++        brightnessUnavailable: "無法調整此顯示器的亮度"
 +    )
 +
 +    static let zhHK = DisplayArrangementStrings(
@@ -607,7 +637,8 @@ index 00000000..c2fbf5de
 +        displayCount: "%1$d 部顯示器",
 +        currentArrangement: "目前排列",
 +        mainDisplay: "主顯示器",
-+        makeMainDisplay: "將此顯示器設為主顯示器"
++        makeMainDisplay: "將此顯示器設為主顯示器",
++        brightnessUnavailable: "無法調整此顯示器的亮度"
 +    )
 +}
 diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift
@@ -845,10 +876,10 @@ index 00000000..d6eb5d56
 +}
 diff --git a/Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift b/Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift
 new file mode 100644
-index 00000000..9bf7dbd4
+index 00000000..7e1e6a5d
 --- /dev/null
 +++ b/Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,329 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -1071,17 +1102,18 @@ index 00000000..9bf7dbd4
 +    @ObservedObject private var l10n = L10n.shared
 +    @ObservedObject private var service = DisplayArrangementService.shared
 +    @Environment(\.notchPresentation) private var notchPresentation
-+    let display: BrightnessDisplay
++    let displayID: CGDirectDisplayID
++    var isActive = true
 +
 +    private var strings: DisplayArrangementStrings {
 +        FeatureStrings.displayArrangement(l10n.language)
 +    }
 +
-+    private var isMain: Bool { service.mainDisplayID == display.id }
++    private var isMain: Bool { service.mainDisplayID == displayID }
 +    /// Exactly one display is always main, so this is a radio rather than a
 +    /// checkbox: the starred row has nothing to toggle, and a display that is
 +    /// switched off cannot hold a menu bar.
-+    private var actionable: Bool { !isMain && display.isActive }
++    private var actionable: Bool { !isMain && isActive }
 +
 +    var body: some View {
 +        Button {
@@ -1089,7 +1121,7 @@ index 00000000..9bf7dbd4
 +            // draws its label dimmed, and the filled star has to read at full
 +            // strength to say which display is main.
 +            guard actionable else { return }
-+            service.makeMain(display.id)
++            service.makeMain(displayID)
 +        } label: {
 +            Image(systemName: isMain ? "star.fill" : "star")
 +                .font(.system(size: 10, weight: .semibold))
@@ -1102,6 +1134,44 @@ index 00000000..9bf7dbd4
 +        .buttonStyle(.plain)
 +        .help(isMain ? strings.mainDisplay : strings.makeMainDisplay)
 +        .accessibilityLabel(isMain ? strings.mainDisplay : strings.makeMainDisplay)
++    }
++}
++
++/// A row for a display the Displays section cannot adjust, such as Sidecar,
++/// laid out like the brightness rows above it so the star has somewhere to
++/// live. The slider is there only to say, by being greyed out, that this
++/// display has no brightness control here.
++struct DisplayWithoutBrightnessRow: View {
++    @ObservedObject private var l10n = L10n.shared
++    let display: ConnectedDisplay
++
++    private var strings: DisplayArrangementStrings {
++        FeatureStrings.displayArrangement(l10n.language)
++    }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack(spacing: 6) {
++                Image(systemName: "display")
++                    .font(.system(size: 10.5, weight: .semibold))
++                    .foregroundStyle(.secondary)
++                    .frame(width: 16)
++                Text(display.name)
++                    .font(.system(size: 11.5, weight: .medium))
++                    .lineLimit(1)
++                    .truncationMode(.middle)
++                MainDisplayStar(displayID: display.id)
++                Spacer(minLength: 4)
++            }
++            Slider(value: .constant(1), in: 0...1)
++                .controlSize(.small)
++                .disabled(true)
++                // A disabled slider keeps its white knob, which still reads
++                // as a working control at a glance; fading it says it is not.
++                .opacity(0.35)
++                .accessibilityLabel(display.name)
++        }
++        .help(strings.brightnessUnavailable)
 +    }
 +}
 +
@@ -1140,7 +1210,7 @@ index 00000000..9bf7dbd4
 +    }
 +}
 diff --git a/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift b/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift
-index 50588dde..7eaaf8d4 100644
+index 50588dde..2e5c1cd6 100644
 --- a/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift
 +++ b/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift
 @@ -10,6 +10,7 @@ struct BrightnessSection: View {
@@ -1164,7 +1234,19 @@ index 50588dde..7eaaf8d4 100644
                  if service.displays.isEmpty {
                      Text(strings.noDisplays)
                          .font(.system(size: 10.5))
-@@ -61,6 +65,7 @@ struct BrightnessSection: View {
+@@ -28,6 +32,11 @@ struct BrightnessSection: View {
+                     ForEach(service.displays) { display in
+                         row(display)
+                     }
++                    if arrangements.isUsable {
++                        ForEach(arrangements.connectedDisplays.filter { connected in
++                            !service.displays.contains { $0.id == connected.id }
++                        }) { DisplayWithoutBrightnessRow(display: $0) }
++                    }
+                 }
+                 if let failure = service.displayControlFailure {
+                     Text(displayControlFailureText(failure, strings: strings))
+@@ -61,6 +70,7 @@ struct BrightnessSection: View {
              .onAppear {
                  service.refresh()
                  service.refreshKeyboardLight()
@@ -1172,14 +1254,14 @@ index 50588dde..7eaaf8d4 100644
              }
          }
      }
-@@ -125,6 +130,11 @@ struct BrightnessSection: View {
+@@ -125,6 +135,11 @@ struct BrightnessSection: View {
                      .font(.system(size: 11.5, weight: .medium))
                      .lineLimit(1)
                      .truncationMode(.middle)
 +                // Only worth asking which display is main when there is more
 +                // than one to choose between.
 +                if arrangements.isUsable {
-+                    MainDisplayStar(display: display)
++                    MainDisplayStar(displayID: display.id, isActive: display.isActive)
 +                }
                  Spacer(minLength: 4)
                  if display.isActive, display.method != nil {

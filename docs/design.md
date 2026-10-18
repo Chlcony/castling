@@ -81,6 +81,11 @@ presets. The main display is one sticky choice, made with the star.
 - An apply failure is cleared when the strip reappears and when editing
   toggles, so an old error never describes a problem that is gone.
 - The edit affordance is upstream's standard `slider.horizontal.3` pill.
+- **Every display gets a star**, including one Vorssaint cannot adjust, such
+  as Sidecar. Upstream lists only displays with a brightness route, so the
+  patch adds a row of its own for the rest: the same layout, with a faded
+  disabled slider and a tooltip saying brightness can't be adjusted there. These rows
+  appear only with two or more displays connected.
 
 ## Colour
 
