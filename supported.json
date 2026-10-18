@@ -5,7 +5,7 @@
       "version": "3.4.1",
       "commit": "aea106cb5d52045c99810cf672da891d2a20b67d",
       "patches": "cl-2026-10-18",
-      "patch": "3.4.1+castling.1",
+      "patch": "3.4.1+cl-2026-10-18",
       "status": "supported"
     }
   ]
