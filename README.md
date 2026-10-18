@@ -76,10 +76,10 @@ updates keep them.
 When Castling supports a new Vorssaint release, Vorssaint's own update banner
 offers it. Click **Update**: Castling rebuilds the patched app in the
 background, which takes a few minutes, and Vorssaint restarts as the new
-version. You can also update from Terminal:
+version. You can also update from Terminal, naming the version:
 
 ```sh
-~/castling/install
+~/castling/install 3.4.2
 ```
 
 ## Undo an update
