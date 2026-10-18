@@ -29,7 +29,7 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 <!-- compat:start -->
 | Vorssaint | Status |
 |---|---|
-| 3.4.1 | coming soon |
+| 3.4.1 | supported |
 <!-- compat:end -->
 
 Any other version: `./install` tells you it isn't supported and changes
