@@ -19,7 +19,7 @@ name: Watch Vorssaint
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       tag:
@@ -53,7 +53,7 @@ jobs:
       prerelease: ${{ steps.find.outputs.prerelease }}
       dry_run: ${{ steps.find.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: find
         env:
@@ -109,7 +109,7 @@ jobs:
       BRANCH: ${{ inputs.test_ai && format('castling/test-ai-{0}', github.run_id) || format('castling/port-{0}', needs.detect.outputs.version) }}
       TEST_AI: ${{ inputs.test_ai && 'true' || 'false' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - run: echo "CASTLING_LOGS=$RUNNER_TEMP/logs" >>"$GITHUB_ENV"
 

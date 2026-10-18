@@ -81,10 +81,16 @@ done < <(git -C "$work/patched" diff --name-only "v$version")
 
 step "Building"
 (cd "$work/patched" && ./build.sh) >"$logs/build.log" 2>&1 || { tail -40 "$logs/build.log"; fail "build"; }
-if grep -q "warning:" "$logs/build.log"; then
-    grep "warning:" "$logs/build.log" | sort -u | head -20
-    fail "build warnings"
+# Only the patch's own files count: a newer compiler on CI can warn about
+# upstream's code, which is upstream's to fix.
+patch_files="$(git -C "$work/patched" diff --name-only "v$version" | sed 's/[.]/[.]/g' | paste -sd'|' -)"
+ours="$(grep -E "^($patch_files):[0-9]+:[0-9]+: warning:" "$logs/build.log" | sort -u || true)"
+if [[ -n "$ours" ]]; then
+    echo "$ours" | head -20
+    fail "build warnings in the patch's files"
 fi
+others="$(grep -cE "^[^ ]+\.swift:[0-9]+:[0-9]+: warning:" "$logs/build.log" || true)"
+(( others == 0 )) || echo "($others warnings in upstream's own files, ignored)"
 
 step "Patch tests"
 "$root/tests/run" "$work/patched" | tee "$logs/patch-tests.log" | tail -1

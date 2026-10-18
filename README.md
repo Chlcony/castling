@@ -1,13 +1,13 @@
 # Castling
 
 *In chess, castling is the one move where two pieces swap places and the king
-relocates. Here the king is your main display.*
+relocates.*
 
 Castling is an **unofficial** patch for [Vorssaint](https://github.com/vorssaint/vorssaint-utils)
 that adds two things to its Displays section:
 
 - **Saved display arrangements.** A strip of to-scale thumbnails, one per saved
-  layout. Click one to move your screens back into it. Tap the edit pill to
+  layout. Click one to move your screens back into it. Click the edit pill to
   save the current layout or delete one.
 - **A main-display star** beside every display. Click a hollow star to make
   that display main without moving any screen, the same setting as System
@@ -20,20 +20,20 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 
 > [!IMPORTANT]
 > **With Castling installed, you hear about a new Vorssaint release only once
-> Castling supports it.** That is usually within hours, but it can take days
-> when the patch needs porting. If you need an upstream fix right away, run
+> Castling supports it.** That is usually soon after the release, but it can
+> take days when the patch needs porting. If you need an upstream fix right away, run
 > `./uninstall` to go back to the official app.
 
 ## Compatibility
 
 <!-- compat:start -->
-| Vorssaint you have | Use patch | Status |
-|---|---|---|
-| 3.4.1 | `3.4.1+castling.1` | being ported |
+| Vorssaint | Status |
+|---|---|
+| 3.4.1 | coming soon |
 <!-- compat:end -->
 
 Any other version: `./install` tells you it isn't supported and changes
-nothing.
+nothing. Vorssaint betas aren't supported.
 
 ## Install
 

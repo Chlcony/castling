@@ -13,11 +13,11 @@ manifest, readme = sys.argv[1:]
 def order(v):
     b, _, p = v.partition("-")
     return (tuple(int(n) for n in b.split(".")), 0 if p else 1, p)
-rows = ["| Vorssaint you have | Use patch | Status |", "|---|---|---|"]
+rows = ["| Vorssaint | Status |", "|---|---|"]
 for r in sorted(json.load(open(manifest))["releases"], key=lambda r: order(r["version"]), reverse=True):
-    status = {"supported": "supported", "in-development": "being ported",
+    status = {"supported": "supported", "in-development": "coming soon",
               "unsupported": "not supported"}.get(r["status"], r["status"])
-    rows.append(f"| {r['version']} | {'`' + r['patch'] + '`' if r['patch'] else '—'} | {status} |")
+    rows.append(f"| {r['version']} | {status} |")
 text = open(readme).read()
 new, n = re.subn(r"(<!-- compat:start -->\n).*?(\n<!-- compat:end -->)",
                  lambda m: m.group(1) + "\n".join(rows) + m.group(2), text, flags=re.S)
