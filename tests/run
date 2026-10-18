@@ -1,0 +1,18 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Usage: tests/run <patched upstream checkout>
+# Compiles the patch's pure logic with its tests and a small local harness.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+upstream="${1:?usage: tests/run <patched upstream checkout>}"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+
+swiftc -O -o "$out/castling-tests" \
+    "$upstream/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift" \
+    "$here/DisplayArrangementTests.swift" \
+    "$here/main.swift"
+"$out/castling-tests"

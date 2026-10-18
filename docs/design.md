@@ -1,0 +1,101 @@
+# Design
+
+How the patch is built and why. Read this before changing behaviour; most of
+the choices that look odd have a reason here.
+
+## Footprint
+
+The patch adds four files to Vorssaint and edits one:
+
+| File | Role |
+|---|---|
+| `Services/Display/DisplayArrangementSupport.swift` | Pure logic: presets, matching, geometry, storage. No AppKit, so it can be tested on its own. |
+| `Services/Display/DisplayArrangementService.swift` | Reads the live displays and reconfigures them. |
+| `Services/Display/DisplayArrangementStrings.swift` | Every string, in every language Vorssaint ships. |
+| `UI/MenuPanel/ArrangementStrip.swift` | The strip of thumbnails, and the star. |
+| `UI/MenuPanel/BrightnessSection.swift` (edited) | Hosts the strip and the star, turns on the section's edit pill, starts the service. |
+
+Every other upstream file this feature could have touched is a conflict
+waiting for the next release. That is why:
+
+- **The preference key lives in the service**, not in `Core/Defaults.swift`.
+  Its string is `displayArrangementPresets`; never change it, or saved
+  arrangements are lost.
+- **The service starts when the Displays section appears**, not at app launch
+  from `FeatureRuntime.swift`.
+- **The strings file sits beside the service**, not in `Core/`. Upstream's test
+  generator collects `Core/*Strings.swift` into its test build, where this file
+  would not compile.
+- **Tests live in this repository** (`tests/`), not in upstream's `Tests/`,
+  which upstream compiles wholesale into its test build.
+- **Saved arrangements are not in settings backups**, because that list lives
+  in `Core/SettingsBackupSupport.swift`.
+- **The Displays tab follows upstream's own rule**: it appears only while
+  brightness controls are on.
+
+## Arrangements and the main display are independent
+
+In CoreGraphics the main display is the one at (0,0), so a set of display
+origins carries both the arrangement and which display is main. Stored as is,
+the two controls would fight: starring a display shifts every origin so no
+preset matches any more, and applying a preset drags the main display back to
+wherever it was at save time.
+
+So **a preset is a shape, not a position**:
+
+- Comparison normalises both layouts to their bounding-box corner, so a
+  translation is not a difference. Starring keeps the highlight.
+- `apply` translates the stored shape so the *current* main display stays at
+  (0,0). Applying a preset moves screens and never changes the main display.
+- A preset that does not include the current main display is applied as saved.
+
+The cost: "same layout, different main display" cannot be saved as two
+presets. The main display is one sticky choice, made with the star.
+
+## Reconfiguring displays
+
+- **One transaction per arrangement.** All origins go into a single
+  `CGBeginDisplayConfiguration` … `CGCompleteDisplayConfiguration`. Applied one
+  display at a time, macOS closes the gaps after each move and the layout lands
+  somewhere nobody saved.
+- **Main thread only.** CoreGraphics runs reconfiguration callbacks inline on
+  the calling thread, and those callbacks are AppKit's. Off the main thread it
+  deadlocks (upstream issue #747). Every entry point checks.
+- **Never ask the display server from a SwiftUI body** (upstream issue #969).
+  The service publishes `mainDisplayID` and `mainDisplayKey`; views read those.
+- **Permanent configuration**, the same as System Settings writes.
+- **Displays are keyed by UUID**, not `CGDirectDisplayID`, which can change
+  between boots. Mirrored displays are skipped: they follow their source.
+- **Untrusted input is validated.** A preset with an origin outside Int32, or
+  fewer than two displays, is dropped at decode; placement also clamps, so a
+  bad value can never trap.
+- **Screen-change notifications are coalesced** (0.1 s), since one change
+  arrives as a burst and applying an arrangement triggers one itself.
+
+## Panel behaviour
+
+- The strip and the star appear only with two or more displays connected. With
+  nothing saved and not editing, the section looks exactly like upstream's.
+- At most 10 presets: past that, a row of thumbnails stops being something you
+  can pick from at a glance.
+- An apply failure is cleared when the strip reappears and when editing
+  toggles, so an old error never describes a problem that is gone.
+- The edit affordance is upstream's standard `slider.horizontal.3` pill.
+
+## Colour
+
+Follow the rule upstream uses for its section tabs:
+
+| | Menu bar panel | Dynamic Island |
+|---|---|---|
+| Not selected | `Color.secondary` | same |
+| Selected thumbnail, filled star | `Color.accentColor` | `Color.white` |
+| Selected container | accent at 0.13 light / 0.20 dark | white at 0.12 |
+
+The accent is deliberately absent inside the Dynamic Island, which always
+renders dark. The delete badge takes a fixed fill per colour scheme (dark in
+light mode, light in dark mode), never `Color.primary`, so it contrasts in
+every surface.
+
+Check every visual change in the light panel, the dark panel and the Dynamic
+Island.

@@ -1,0 +1,1186 @@
+From dbfb7a90e0a53ab69234d3da7820260b8604da32 Mon Sep 17 00:00:00 2001
+From: Chlcony <72945153+Chlcony@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 02:08:36 +0300
+Subject: [PATCH] feat(display): save display arrangements and choose the main
+ display
+
+Adds a strip of saved arrangements to the top of the Displays section and
+a star beside each display that makes it the main one. Applying an
+arrangement moves the screens and keeps the current main display;
+starring a display changes the main display and keeps the arrangement.
+---
+ .../Display/DisplayArrangementService.swift   | 271 ++++++++++++++++
+ .../Display/DisplayArrangementStrings.swift   | 307 ++++++++++++++++++
+ .../Display/DisplayArrangementSupport.swift   | 227 +++++++++++++
+ .../UI/MenuPanel/ArrangementStrip.swift       | 290 +++++++++++++++++
+ .../UI/MenuPanel/BrightnessSection.swift      |  12 +-
+ 5 files changed, 1106 insertions(+), 1 deletion(-)
+ create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
+ create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
+ create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift
+ create mode 100644 Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift
+
+diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementService.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
+new file mode 100644
+index 00000000..267926c0
+--- /dev/null
++++ b/Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
+@@ -0,0 +1,271 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (C) 2026 Chlcony
++
++import AppKit
++import os
++
++/// Saved display arrangements, applied with one click from the Displays
++/// section. macOS keeps exactly one arrangement, so a person who works both
++/// with the laptop beside an external monitor and with it underneath has to
++/// redraw the layout in System Settings every time they switch. This
++/// remembers the layouts instead.
++///
++/// Everything here is public CoreGraphics: origins are read with
++/// `CGDisplayBounds` and written inside a `CGBeginDisplayConfiguration`
++/// transaction. The main display is the one at the origin, so origins alone
++/// carry both the layout and the menu bar's home.
++final class DisplayArrangementService: ObservableObject {
++    static let shared = DisplayArrangementService()
++
++    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "vorssaint",
++                                    category: "display")
++
++    enum Failure: Equatable {
++        case applyFailed
++        case duplicate
++        case limitReached
++    }
++
++    @Published private(set) var presets: [DisplayArrangementPreset] = []
++    @Published private(set) var activePresetID: UUID?
++    @Published private(set) var connectedKeys: Set<String> = []
++    /// Which display currently owns the menu bar. Published rather than read
++    /// from CoreGraphics in a view body: asking the display server from a body
++    /// that may itself be laid out inside a reconfiguration is how issue #969
++    /// happened.
++    @Published private(set) var mainDisplayID: CGDirectDisplayID?
++    /// The same display as `mainDisplayID`, by the key presets are written in.
++    @Published private(set) var mainDisplayKey: String?
++    @Published private(set) var failure: Failure?
++
++    /// Saved arrangements, JSON `[DisplayArrangementPreset]`. Kept here rather
++    /// than in `DefaultsKey` so the feature stays in its own files; absent
++    /// means none saved, so there is no registered default.
++    static let presetsKey = "displayArrangementPresets"
++
++    private var refreshWork: DispatchWorkItem?
++    private var observing = false
++
++    /// Reading the saved presets is all the initializer does. The live
++    /// displays are read from `syncWithPreferences`, which the Displays section
++    /// calls when it appears: publishing a change from here would mean
++    /// publishing it while the view that asked for this singleton is still
++    /// being built.
++    private init() {
++        presets = DisplayArrangementSupport.decode(
++            UserDefaults.standard.data(forKey: Self.presetsKey))
++    }
++
++    /// v1 rides on the Brightness feature, because the strip lives inside that
++    /// section and cannot be reached when it is uninstalled. When arrangements
++    /// earn their own hub entry, this is the only line that changes.
++    static var isAvailable: Bool { AppFeature.brightness.isAvailable }
++
++    /// One display has no arrangement to speak of, so the strip stays out of
++    /// the way entirely until a second one is connected.
++    var isUsable: Bool { Self.isAvailable && connectedKeys.count > 1 }
++
++    func syncWithPreferences() {
++        guard Self.isAvailable else {
++            stopObserving()
++            return
++        }
++        startObserving()
++        refresh()
++    }
++
++    // MARK: - Reading the live arrangement
++
++    func refresh() {
++        guard Thread.isMainThread else {
++            DispatchQueue.main.async { [weak self] in self?.refresh() }
++            return
++        }
++        let current = Self.currentSlots()
++        connectedKeys = Set(current.map(\.key))
++        activePresetID = DisplayArrangementSupport.activePreset(in: presets, current: current)
++        mainDisplayID = NSScreen.screens.first { CGDisplayBounds($0.displayID).origin == .zero }?
++            .displayID
++        mainDisplayKey = current.first(where: \.isMain)?.key
++    }
++
++    /// The live arrangement, main thread only: `NSScreen` is main-thread work,
++    /// and it is also what gives each display the name System Settings shows.
++    private static func currentSlots() -> [DisplaySlot] {
++        guard Thread.isMainThread else { return [] }
++        var slots: [DisplaySlot] = []
++        for screen in NSScreen.screens {
++            let id = screen.displayID
++            guard id != 0 else { continue }
++            // A mirrored display shows another one's picture and has no place
++            // of its own; it follows its source wherever that goes.
++            guard CGDisplayMirrorsDisplay(id) == 0 else { continue }
++            guard let reference = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue(),
++                  let key = CFUUIDCreateString(nil, reference) as String? else { continue }
++            let bounds = CGDisplayBounds(id)
++            slots.append(DisplaySlot(key: key,
++                                     name: screen.localizedName,
++                                     x: Int(bounds.origin.x),
++                                     y: Int(bounds.origin.y),
++                                     width: Int(bounds.width),
++                                     height: Int(bounds.height)))
++        }
++        return slots
++    }
++
++    // MARK: - Editing
++
++    func saveCurrent() {
++        guard Thread.isMainThread else { return }
++        let current = Self.currentSlots()
++        guard current.count > 1 else { return }
++        if let existing = DisplayArrangementSupport.duplicate(of: current, in: presets) {
++            failure = .duplicate
++            activePresetID = existing
++            return
++        }
++        guard presets.count < DisplayArrangementSupport.maximumPresets else {
++            failure = .limitReached
++            return
++        }
++        let preset = DisplayArrangementPreset(slots: current)
++        presets.append(preset)
++        persist()
++        failure = nil
++        activePresetID = preset.id
++    }
++
++    func delete(_ id: UUID) {
++        presets.removeAll { $0.id == id }
++        persist()
++        failure = nil
++        if activePresetID == id { activePresetID = nil }
++        refresh()
++    }
++
++    /// Dismisses a "already saved" or "that is the limit" notice. Leaving
++    /// edit mode is an answer to it, so the notice goes with it.
++    func clearFailure() {
++        failure = nil
++    }
++
++    private func persist() {
++        guard let data = DisplayArrangementSupport.encode(presets) else { return }
++        UserDefaults.standard.set(data, forKey: Self.presetsKey)
++    }
++
++    // MARK: - Applying
++
++    /// Moves every display to its saved origin inside one reconfiguration.
++    ///
++    /// **Main thread only**, for the reason spelled out on
++    /// `BrightnessService.configureDisplay`: CoreGraphics runs a
++    /// reconfiguration's callbacks inline on the driving thread, and in this
++    /// process those callbacks are AppKit's, which is main-thread work.
++    ///
++    /// The whole layout goes in one transaction so the display server resolves
++    /// it as a unit. Applying displays one at a time would make macOS close
++    /// the gaps after each move, and the arrangement would land somewhere the
++    /// user never saved.
++    /// Applying an arrangement moves the screens and leaves the menu bar where
++    /// the person put it. The stored origins carry whichever display was main
++    /// at save time, so they are re-anchored on the current one first; a preset
++    /// that does not contain the current main display is applied as saved,
++    /// since there is nothing to keep.
++    func apply(_ preset: DisplayArrangementPreset) {
++        guard let key = mainDisplayKey, preset.keys.contains(key),
++              let anchored = DisplayArrangementSupport.slots(preset.slots, keepingMain: key)
++        else {
++            place(preset.slots)
++            return
++        }
++        place(anchored)
++    }
++
++    /// Moves the menu bar to `target`, keeping every display where it is
++    /// relative to the others. macOS calls the display at the origin the main
++    /// one, so this is a translation of the whole arrangement rather than a
++    /// setting of its own.
++    func makeMain(_ target: CGDirectDisplayID) {
++        guard Thread.isMainThread else {
++            Self.log.error("refused to change the main display off the main thread")
++            return
++        }
++        let identifiers = SpaceWindowBridge.displayIDsByUUID()
++        guard let key = identifiers.first(where: { $0.value == target })?.key,
++              let moved = DisplayArrangementSupport.slots(Self.currentSlots(), makingMain: key)
++        else { return }
++        place(moved)
++    }
++
++    private func place(_ slots: [DisplaySlot]) {
++        guard Thread.isMainThread else {
++            Self.log.error("refused to reconfigure displays off the main thread")
++            return
++        }
++        let identifiers = SpaceWindowBridge.displayIDsByUUID()
++        var reference: CGDisplayConfigRef?
++        guard CGBeginDisplayConfiguration(&reference) == .success,
++              let configuration = reference else {
++            failure = .applyFailed
++            return
++        }
++        for slot in slots {
++            // `decode` refuses a preset whose origins are out of Int32 range,
++            // so clamping here is belt and braces rather than the guard: it
++            // means no future caller can turn a bad number into a trap.
++            guard let id = identifiers[slot.key],
++                  CGConfigureDisplayOrigin(configuration, id,
++                                           Int32(clamping: slot.x),
++                                           Int32(clamping: slot.y)) == .success else {
++                CGCancelDisplayConfiguration(configuration)
++                Self.log.error("could not place display \(slot.key, privacy: .public)")
++                failure = .applyFailed
++                return
++            }
++        }
++        // Permanent because that is what the person means by switching
++        // arrangement: System Settings writes the same way, and a layout that
++        // reverted on quit would be a worse answer than the manual dragging
++        // this replaces.
++        guard CGCompleteDisplayConfiguration(configuration, .permanently) == .success else {
++            Self.log.error("display reconfiguration was refused")
++            failure = .applyFailed
++            return
++        }
++        failure = nil
++        refresh()
++    }
++
++    // MARK: - Staying in step with the displays
++
++    private func startObserving() {
++        guard !observing else { return }
++        observing = true
++        NotificationCenter.default.addObserver(
++            self,
++            selector: #selector(screenParametersDidChange),
++            name: NSApplication.didChangeScreenParametersNotification,
++            object: nil)
++    }
++
++    private func stopObserving() {
++        guard observing else { return }
++        observing = false
++        NotificationCenter.default.removeObserver(
++            self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
++    }
++
++    /// A single change arrives as a burst of notifications, and applying an
++    /// arrangement causes one itself, so the reread is coalesced.
++    @objc private func screenParametersDidChange() {
++        refreshWork?.cancel()
++        let work = DispatchWorkItem { [weak self] in
++            guard let self else { return }
++            self.refreshWork = nil
++            self.refresh()
++        }
++        refreshWork = work
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
++    }
++}
+diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
+new file mode 100644
+index 00000000..c2fbf5de
+--- /dev/null
++++ b/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
+@@ -0,0 +1,307 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (C) 2026 Chlcony
++
++import Foundation
++
++/// Strings for the saved display arrangements in the Displays section. Same
++/// contract as the other FeatureStrings structs: memberwise init with labeled
++/// arguments in declaration order, one static per language, all in this file.
++///
++/// The strip itself carries no text, so most of these are tooltips and
++/// accessibility labels: a thumbnail has to be able to say what it is to
++/// somebody who cannot see the shape.
++struct DisplayArrangementStrings {
++    let saveArrangement: String
++    let deleteArrangement: String
++    let applyFailed: String
++    let duplicate: String
++    let limitReached: String
++    let needsDisplays: String
++    let relationLeft: String
++    let relationRight: String
++    let relationAbove: String
++    let relationBelow: String
++    let displayCount: String
++    let currentArrangement: String
++    let mainDisplay: String
++    let makeMainDisplay: String
++}
++
++extension FeatureStrings {
++    static func displayArrangement(_ language: AppLanguage) -> DisplayArrangementStrings {
++        switch language {
++        case .enUS: return .enUS
++        case .ptBR: return .ptBR
++        case .tr: return .tr
++        case .ru: return .ru
++        case .uk: return .uk
++        case .es: return .es
++        case .sk: return .sk
++        case .de: return .de
++        case .fr: return .fr
++        case .it: return .it
++        case .ja: return .ja
++        case .ko: return .ko
++        case .zhHans: return .zhHans
++        case .zhTW: return .zhTW
++        case .zhHK: return .zhHK
++        }
++    }
++}
++
++extension DisplayArrangementStrings {
++    static let enUS = DisplayArrangementStrings(
++        saveArrangement: "Save Arrangement",
++        deleteArrangement: "Delete this arrangement",
++        applyFailed: "Could not switch to that arrangement.",
++        duplicate: "That arrangement is already saved.",
++        limitReached: "You can save up to %1$d arrangements.",
++        needsDisplays: "Needs %1$@",
++        relationLeft: "%1$@ left of %2$@",
++        relationRight: "%1$@ right of %2$@",
++        relationAbove: "%1$@ above %2$@",
++        relationBelow: "%1$@ below %2$@",
++        displayCount: "%1$d displays",
++        currentArrangement: "Current arrangement",
++        mainDisplay: "Main display",
++        makeMainDisplay: "Make this the main display"
++    )
++
++    static let ptBR = DisplayArrangementStrings(
++        saveArrangement: "Salvar disposição",
++        deleteArrangement: "Excluir esta disposição",
++        applyFailed: "Não foi possível mudar para essa disposição.",
++        duplicate: "Essa disposição já está salva.",
++        limitReached: "Você pode salvar até %1$d disposições.",
++        needsDisplays: "Precisa de %1$@",
++        relationLeft: "%1$@ à esquerda de %2$@",
++        relationRight: "%1$@ à direita de %2$@",
++        relationAbove: "%1$@ acima de %2$@",
++        relationBelow: "%1$@ abaixo de %2$@",
++        displayCount: "%1$d telas",
++        currentArrangement: "Disposição atual",
++        mainDisplay: "Tela principal",
++        makeMainDisplay: "Tornar esta a tela principal"
++    )
++
++    static let tr = DisplayArrangementStrings(
++        saveArrangement: "Düzeni kaydet",
++        deleteArrangement: "Bu düzeni sil",
++        applyFailed: "Bu düzene geçilemedi.",
++        duplicate: "Bu düzen zaten kayıtlı.",
++        limitReached: "En fazla %1$d düzen kaydedebilirsiniz.",
++        needsDisplays: "Şunu gerektirir: %1$@",
++        relationLeft: "%1$@, %2$@ ekranının solunda",
++        relationRight: "%1$@, %2$@ ekranının sağında",
++        relationAbove: "%1$@, %2$@ ekranının üstünde",
++        relationBelow: "%1$@, %2$@ ekranının altında",
++        displayCount: "%1$d ekran",
++        currentArrangement: "Geçerli düzen",
++        mainDisplay: "Ana ekran",
++        makeMainDisplay: "Bunu ana ekran yap"
++    )
++
++    static let ru = DisplayArrangementStrings(
++        saveArrangement: "Сохранить расположение",
++        deleteArrangement: "Удалить это расположение",
++        applyFailed: "Не удалось переключиться на это расположение.",
++        duplicate: "Такое расположение уже сохранено.",
++        limitReached: "Можно сохранить не больше %1$d расположений.",
++        needsDisplays: "Требуется: %1$@",
++        relationLeft: "%1$@ слева от %2$@",
++        relationRight: "%1$@ справа от %2$@",
++        relationAbove: "%1$@ над %2$@",
++        relationBelow: "%1$@ под %2$@",
++        displayCount: "Мониторов: %1$d",
++        currentArrangement: "Текущее расположение",
++        mainDisplay: "Главный монитор",
++        makeMainDisplay: "Сделать главным монитором"
++    )
++
++    static let uk = DisplayArrangementStrings(
++        saveArrangement: "Зберегти розташування",
++        deleteArrangement: "Видалити це розташування",
++        applyFailed: "Не вдалося перейти до цього розташування.",
++        duplicate: "Таке розташування вже збережено.",
++        limitReached: "Можна зберегти не більше ніж %1$d розташувань.",
++        needsDisplays: "Потрібно: %1$@",
++        relationLeft: "%1$@ ліворуч від %2$@",
++        relationRight: "%1$@ праворуч від %2$@",
++        relationAbove: "%1$@ над %2$@",
++        relationBelow: "%1$@ під %2$@",
++        displayCount: "Дисплеїв: %1$d",
++        currentArrangement: "Поточне розташування",
++        mainDisplay: "Основний дисплей",
++        makeMainDisplay: "Зробити основним дисплеєм"
++    )
++
++    static let es = DisplayArrangementStrings(
++        saveArrangement: "Guardar disposición",
++        deleteArrangement: "Eliminar esta disposición",
++        applyFailed: "No se pudo cambiar a esa disposición.",
++        duplicate: "Esa disposición ya está guardada.",
++        limitReached: "Puedes guardar hasta %1$d disposiciones.",
++        needsDisplays: "Necesita %1$@",
++        relationLeft: "%1$@ a la izquierda de %2$@",
++        relationRight: "%1$@ a la derecha de %2$@",
++        relationAbove: "%1$@ encima de %2$@",
++        relationBelow: "%1$@ debajo de %2$@",
++        displayCount: "%1$d pantallas",
++        currentArrangement: "Disposición actual",
++        mainDisplay: "Pantalla principal",
++        makeMainDisplay: "Convertir en pantalla principal"
++    )
++
++    static let sk = DisplayArrangementStrings(
++        saveArrangement: "Uložiť usporiadanie",
++        deleteArrangement: "Vymazať toto usporiadanie",
++        applyFailed: "Na toto usporiadanie sa nepodarilo prepnúť.",
++        duplicate: "Toto usporiadanie je už uložené.",
++        limitReached: "Môžete uložiť najviac %1$d usporiadaní.",
++        needsDisplays: "Vyžaduje: %1$@",
++        relationLeft: "%1$@ vľavo od %2$@",
++        relationRight: "%1$@ vpravo od %2$@",
++        relationAbove: "%1$@ nad %2$@",
++        relationBelow: "%1$@ pod %2$@",
++        displayCount: "Displeje: %1$d",
++        currentArrangement: "Aktuálne usporiadanie",
++        mainDisplay: "Hlavný displej",
++        makeMainDisplay: "Nastaviť ako hlavný displej"
++    )
++
++    static let de = DisplayArrangementStrings(
++        saveArrangement: "Anordnung sichern",
++        deleteArrangement: "Diese Anordnung löschen",
++        applyFailed: "Zu dieser Anordnung konnte nicht gewechselt werden.",
++        duplicate: "Diese Anordnung ist bereits gesichert.",
++        limitReached: "Du kannst bis zu %1$d Anordnungen sichern.",
++        needsDisplays: "Benötigt %1$@",
++        relationLeft: "%1$@ links von %2$@",
++        relationRight: "%1$@ rechts von %2$@",
++        relationAbove: "%1$@ über %2$@",
++        relationBelow: "%1$@ unter %2$@",
++        displayCount: "%1$d Displays",
++        currentArrangement: "Aktuelle Anordnung",
++        mainDisplay: "Hauptdisplay",
++        makeMainDisplay: "Zum Hauptdisplay machen"
++    )
++
++    static let fr = DisplayArrangementStrings(
++        saveArrangement: "Enregistrer la disposition",
++        deleteArrangement: "Supprimer cette disposition",
++        applyFailed: "Impossible de passer à cette disposition.",
++        duplicate: "Cette disposition est déjà enregistrée.",
++        limitReached: "Vous pouvez enregistrer jusqu’à %1$d dispositions.",
++        needsDisplays: "Nécessite %1$@",
++        relationLeft: "%1$@ à gauche de %2$@",
++        relationRight: "%1$@ à droite de %2$@",
++        relationAbove: "%1$@ au-dessus de %2$@",
++        relationBelow: "%1$@ en dessous de %2$@",
++        displayCount: "%1$d écrans",
++        currentArrangement: "Disposition actuelle",
++        mainDisplay: "Écran principal",
++        makeMainDisplay: "Définir comme écran principal"
++    )
++
++    static let it = DisplayArrangementStrings(
++        saveArrangement: "Salva disposizione",
++        deleteArrangement: "Elimina questa disposizione",
++        applyFailed: "Impossibile passare a questa disposizione.",
++        duplicate: "Questa disposizione è già salvata.",
++        limitReached: "Puoi salvare fino a %1$d disposizioni.",
++        needsDisplays: "Richiede %1$@",
++        relationLeft: "%1$@ a sinistra di %2$@",
++        relationRight: "%1$@ a destra di %2$@",
++        relationAbove: "%1$@ sopra %2$@",
++        relationBelow: "%1$@ sotto %2$@",
++        displayCount: "%1$d schermi",
++        currentArrangement: "Disposizione attuale",
++        mainDisplay: "Schermo principale",
++        makeMainDisplay: "Rendi questo lo schermo principale"
++    )
++
++    static let ja = DisplayArrangementStrings(
++        saveArrangement: "配置を保存",
++        deleteArrangement: "この配置を削除",
++        applyFailed: "その配置に切り替えられませんでした。",
++        duplicate: "その配置はすでに保存されています。",
++        limitReached: "保存できる配置は %1$d 個までです。",
++        needsDisplays: "%1$@ が必要です",
++        relationLeft: "%2$@ の左に %1$@",
++        relationRight: "%2$@ の右に %1$@",
++        relationAbove: "%2$@ の上に %1$@",
++        relationBelow: "%2$@ の下に %1$@",
++        displayCount: "ディスプレイ %1$d 台",
++        currentArrangement: "現在の配置",
++        mainDisplay: "メインディスプレイ",
++        makeMainDisplay: "このディスプレイをメインにする"
++    )
++
++    static let ko = DisplayArrangementStrings(
++        saveArrangement: "배열 저장",
++        deleteArrangement: "이 배열 삭제",
++        applyFailed: "해당 배열로 전환할 수 없습니다.",
++        duplicate: "이미 저장된 배열입니다.",
++        limitReached: "배열은 최대 %1$d개까지 저장할 수 있습니다.",
++        needsDisplays: "%1$@ 필요",
++        relationLeft: "%2$@ 왼쪽에 %1$@",
++        relationRight: "%2$@ 오른쪽에 %1$@",
++        relationAbove: "%2$@ 위에 %1$@",
++        relationBelow: "%2$@ 아래에 %1$@",
++        displayCount: "디스플레이 %1$d대",
++        currentArrangement: "현재 배열",
++        mainDisplay: "주 디스플레이",
++        makeMainDisplay: "이 디스플레이를 주 디스플레이로 설정"
++    )
++
++    static let zhHans = DisplayArrangementStrings(
++        saveArrangement: "存储排列",
++        deleteArrangement: "删除此排列",
++        applyFailed: "无法切换到该排列。",
++        duplicate: "该排列已存储。",
++        limitReached: "最多可存储 %1$d 个排列。",
++        needsDisplays: "需要 %1$@",
++        relationLeft: "%1$@ 在 %2$@ 左侧",
++        relationRight: "%1$@ 在 %2$@ 右侧",
++        relationAbove: "%1$@ 在 %2$@ 上方",
++        relationBelow: "%1$@ 在 %2$@ 下方",
++        displayCount: "%1$d 台显示器",
++        currentArrangement: "当前排列",
++        mainDisplay: "主显示器",
++        makeMainDisplay: "将此显示器设为主显示器"
++    )
++
++    static let zhTW = DisplayArrangementStrings(
++        saveArrangement: "儲存排列",
++        deleteArrangement: "刪除此排列",
++        applyFailed: "無法切換到該排列。",
++        duplicate: "該排列已儲存。",
++        limitReached: "最多可儲存 %1$d 個排列。",
++        needsDisplays: "需要 %1$@",
++        relationLeft: "%1$@ 在 %2$@ 左側",
++        relationRight: "%1$@ 在 %2$@ 右側",
++        relationAbove: "%1$@ 在 %2$@ 上方",
++        relationBelow: "%1$@ 在 %2$@ 下方",
++        displayCount: "%1$d 部顯示器",
++        currentArrangement: "目前排列",
++        mainDisplay: "主顯示器",
++        makeMainDisplay: "將此顯示器設為主顯示器"
++    )
++
++    static let zhHK = DisplayArrangementStrings(
++        saveArrangement: "儲存排列",
++        deleteArrangement: "刪除此排列",
++        applyFailed: "無法切換至該排列。",
++        duplicate: "該排列已儲存。",
++        limitReached: "最多可儲存 %1$d 個排列。",
++        needsDisplays: "需要 %1$@",
++        relationLeft: "%1$@ 喺 %2$@ 左邊",
++        relationRight: "%1$@ 喺 %2$@ 右邊",
++        relationAbove: "%1$@ 喺 %2$@ 上面",
++        relationBelow: "%1$@ 喺 %2$@ 下面",
++        displayCount: "%1$d 部顯示器",
++        currentArrangement: "目前排列",
++        mainDisplay: "主顯示器",
++        makeMainDisplay: "將此顯示器設為主顯示器"
++    )
++}
+diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift
+new file mode 100644
+index 00000000..d6eb5d56
+--- /dev/null
++++ b/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift
+@@ -0,0 +1,227 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (C) 2026 Chlcony
++
++import Foundation
++
++/// One display's place in a saved arrangement. Positions are CoreGraphics
++/// global coordinates, where the main display — the one carrying the menu bar
++/// — is by definition at the origin. Storing the origins therefore captures
++/// both the spatial layout and which display is main, with nothing extra.
++///
++/// The key is the display's UUID rather than its `CGDirectDisplayID`: ids are
++/// reassigned across reconnection and reboots, so a preset keyed by one would
++/// silently start pointing at the wrong monitor.
++struct DisplaySlot: Codable, Equatable, Identifiable {
++    let key: String
++    /// The display's name when the preset was saved, kept so a preset can say
++    /// which monitor it is waiting for while that monitor is unplugged.
++    let name: String
++    let x: Int
++    let y: Int
++    let width: Int
++    let height: Int
++
++    var id: String { key }
++    var isMain: Bool { x == 0 && y == 0 }
++}
++
++struct DisplayArrangementPreset: Codable, Equatable, Identifiable {
++    let id: UUID
++    var slots: [DisplaySlot]
++
++    init(id: UUID = UUID(), slots: [DisplaySlot]) {
++        self.id = id
++        self.slots = DisplayArrangementSupport.normalized(slots)
++    }
++
++    var keys: Set<String> { Set(slots.map(\.key)) }
++}
++
++/// Everything about arrangements that can be decided without touching
++/// CoreGraphics or AppKit, so it can be exercised by the test suite.
++enum DisplayArrangementSupport {
++    /// The strip is a row of small thumbnails in a 308pt panel, not a list.
++    /// Past this many it stops being something you can pick from at a glance.
++    static let maximumPresets = 10
++
++    /// Where a display sits relative to the main one. The UI turns this into
++    /// the preset's tooltip; keeping the decision here keeps this file free of
++    /// localized text.
++    enum Relation {
++        case left, right, above, below, overlapping
++    }
++
++    struct Box: Equatable {
++        var minX: Double
++        var minY: Double
++        var width: Double
++        var height: Double
++    }
++
++    /// Slots in a stable order so two captures of the same layout compare
++    /// equal whatever order the system listed the displays in.
++    static func normalized(_ slots: [DisplaySlot]) -> [DisplaySlot] {
++        slots.sorted { $0.key < $1.key }
++    }
++
++    /// The same displays, shifted so the arrangement's top-left corner is the
++    /// origin.
++    ///
++    /// This is what makes an arrangement a *shape* rather than a position. In
++    /// CoreGraphics the main display is whichever one is at (0,0), so two
++    /// captures of physically identical screens differ by a translation as soon
++    /// as the menu bar moves between them. Canonicalizing removes that
++    /// translation, so moving the menu bar is not mistaken for rearranging the
++    /// desk.
++    static func canonical(_ slots: [DisplaySlot]) -> [DisplaySlot] {
++        guard let box = boundingBox(slots) else { return normalized(slots) }
++        return translated(slots, byX: -Int(box.minX), y: -Int(box.minY)) ?? normalized(slots)
++    }
++
++    private static func translated(_ slots: [DisplaySlot], byX dx: Int, y dy: Int) -> [DisplaySlot]? {
++        let moved = slots.map {
++            DisplaySlot(key: $0.key, name: $0.name,
++                        x: $0.x + dx, y: $0.y + dy,
++                        width: $0.width, height: $0.height)
++        }
++        guard moved.allSatisfy(isPlaceable) else { return nil }
++        return normalized(moved)
++    }
++
++    /// Whether two captures describe the same physical arrangement. Two things
++    /// are deliberately excluded: a monitor renamed in System Settings is still
++    /// the same monitor in the same place, and which display holds the menu bar
++    /// is a separate choice from where the screens sit.
++    static func sameLayout(_ lhs: [DisplaySlot], _ rhs: [DisplaySlot]) -> Bool {
++        let left = canonical(lhs)
++        let right = canonical(rhs)
++        guard left.count == right.count else { return false }
++        return zip(left, right).allSatisfy {
++            $0.key == $1.key && $0.x == $1.x && $0.y == $1.y
++        }
++    }
++
++    /// A preset can only be applied when every display it names is connected.
++    static func matches(_ preset: DisplayArrangementPreset, connected: Set<String>) -> Bool {
++        preset.keys.isSubset(of: connected)
++    }
++
++    /// The names of the displays a preset is waiting for, in saved order.
++    static func missingDisplayNames(_ preset: DisplayArrangementPreset,
++                                    connected: Set<String>) -> [String] {
++        preset.slots.filter { !connected.contains($0.key) }.map(\.name)
++    }
++
++    /// The preset describing the live layout, if any.
++    static func activePreset(in presets: [DisplayArrangementPreset],
++                             current: [DisplaySlot]) -> UUID? {
++        presets.first { sameLayout($0.slots, current) }?.id
++    }
++
++    /// Whether this layout is already saved. Saving a second copy of an
++    /// arrangement that is already in the strip only makes the strip harder
++    /// to read.
++    static func duplicate(of slots: [DisplaySlot],
++                          in presets: [DisplayArrangementPreset]) -> UUID? {
++        presets.first { sameLayout($0.slots, slots) }?.id
++    }
++
++    /// The rectangle enclosing every display, used to scale a thumbnail.
++    static func boundingBox(_ slots: [DisplaySlot]) -> Box? {
++        guard let first = slots.first else { return nil }
++        var minX = Double(first.x)
++        var minY = Double(first.y)
++        var maxX = Double(first.x + first.width)
++        var maxY = Double(first.y + first.height)
++        for slot in slots.dropFirst() {
++            minX = min(minX, Double(slot.x))
++            minY = min(minY, Double(slot.y))
++            maxX = max(maxX, Double(slot.x + slot.width))
++            maxY = max(maxY, Double(slot.y + slot.height))
++        }
++        let width = maxX - minX
++        let height = maxY - minY
++        guard width > 0, height > 0 else { return nil }
++        return Box(minX: minX, minY: minY, width: width, height: height)
++    }
++
++    /// The main display of a saved arrangement: the one at the origin, or the
++    /// leftmost if a hand-edited preference left none there.
++    static func mainSlot(_ slots: [DisplaySlot]) -> DisplaySlot? {
++        slots.first(where: \.isMain) ?? slots.min { $0.x < $1.x }
++    }
++
++    /// Where `slot` sits relative to `main`. Vertical stacking wins ties only
++    /// when the horizontal overlap is larger than the vertical one, so a
++    /// display placed diagonally is described by its dominant direction.
++    static func relation(of slot: DisplaySlot, to main: DisplaySlot) -> Relation {
++        let horizontalOverlap = min(slot.x + slot.width, main.x + main.width) - max(slot.x, main.x)
++        let verticalOverlap = min(slot.y + slot.height, main.y + main.height) - max(slot.y, main.y)
++        if horizontalOverlap > 0 && verticalOverlap > 0 { return .overlapping }
++        if horizontalOverlap >= verticalOverlap {
++            return slot.y < main.y ? .above : .below
++        }
++        return slot.x < main.x ? .left : .right
++    }
++
++    /// The one display a preset is best described by: the first non-main slot
++    /// in saved order. Two-display arrangements — the case this feature is
++    /// built for — are then fully described by one relation.
++    static func describingSlot(_ preset: DisplayArrangementPreset) -> DisplaySlot? {
++        guard let main = mainSlot(preset.slots) else { return nil }
++        return preset.slots.first { $0.key != main.key }
++    }
++
++    /// CoreGraphics takes display origins as `Int32`. A preset is JSON on
++    /// disk, so nothing stops a hand-edited preference or a mangled settings
++    /// backup carrying a coordinate no display could have, and converting one
++    /// of those on the way to `CGConfigureDisplayOrigin` would trap rather
++    /// than fail. Such a preset is refused here instead, where the answer is
++    /// to drop it rather than to take the app down with it.
++    static func isPlaceable(_ slot: DisplaySlot) -> Bool {
++        let limits = Int(Int32.min)...Int(Int32.max)
++        return limits.contains(slot.x) && limits.contains(slot.y)
++            && slot.width > 0 && slot.height > 0
++    }
++
++    /// The same displays, shifted so `key` sits at the origin.
++    ///
++    /// macOS has no separate "main display" setting: the main display is
++    /// whichever one is at (0,0), and the menu bar follows it. So moving the
++    /// menu bar is a translation of the whole arrangement — every display
++    /// keeps its position relative to every other, and only the origin moves.
++    ///
++    /// Returns nil when the display is unknown, already main, or when the
++    /// translation would push a coordinate somewhere it cannot be applied.
++    static func slots(_ slots: [DisplaySlot], makingMain key: String) -> [DisplaySlot]? {
++        guard let target = slots.first(where: { $0.key == key }), !target.isMain else { return nil }
++        return self.slots(slots, keepingMain: key)
++    }
++
++    /// The same arrangement, positioned so `key` holds the menu bar.
++    ///
++    /// Applying a saved arrangement moves screens; which display is main is a
++    /// separate control with its own affordance, and a preset restoring the
++    /// menu bar to wherever it happened to be at save time would silently
++    /// undo that choice.
++    static func slots(_ slots: [DisplaySlot], keepingMain key: String) -> [DisplaySlot]? {
++        guard let anchor = slots.first(where: { $0.key == key }) else { return nil }
++        return translated(slots, byX: -anchor.x, y: -anchor.y)
++    }
++
++    static func decode(_ data: Data?) -> [DisplayArrangementPreset] {
++        guard let data, !data.isEmpty else { return [] }
++        guard let presets = try? JSONDecoder().decode([DisplayArrangementPreset].self, from: data)
++        else { return [] }
++        // A preset with fewer than two displays cannot describe an
++        // arrangement, one carrying an unplaceable slot cannot be applied, and
++        // one over the cap would not fit the strip. All three can only come
++        // from a preference nobody in this app wrote.
++        let usable = presets.filter { $0.slots.count > 1 && $0.slots.allSatisfy(isPlaceable) }
++        return Array(usable.prefix(maximumPresets))
++    }
++
++    static func encode(_ presets: [DisplayArrangementPreset]) -> Data? {
++        try? JSONEncoder().encode(presets)
++    }
++}
+diff --git a/Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift b/Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift
+new file mode 100644
+index 00000000..9bf7dbd4
+--- /dev/null
++++ b/Sources/Vorssaint/UI/MenuPanel/ArrangementStrip.swift
+@@ -0,0 +1,290 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (C) 2026 Chlcony
++
++import SwiftUI
++
++/// Saved display arrangements, at the top of the Displays section: one small
++/// picture of each layout, click to switch. The strip carries no text because
++/// the shape is the label; the names live in the tooltips and the
++/// accessibility labels, where a description is worth more than a caption.
++struct ArrangementStrip: View {
++    @ObservedObject private var l10n = L10n.shared
++    @ObservedObject private var service = DisplayArrangementService.shared
++    @Environment(\.colorScheme) private var colorScheme
++    @Environment(\.notchPresentation) private var notchPresentation
++    let editing: Bool
++
++    /// Thumbnail plus its padding. The grid fits as many of these per row as
++    /// the surface allows, which differs between the menu bar panel and a
++    /// Dynamic Island the user can size down to 360pt.
++    private let slotWidth: CGFloat = 50
++
++    private var strings: DisplayArrangementStrings {
++        FeatureStrings.displayArrangement(l10n.language)
++    }
++
++    @ViewBuilder
++    var body: some View {
++        // Nothing to show until a second display is connected, and nothing to
++        // show in normal mode until something is saved, so the section looks
++        // exactly as it did before anyone uses this.
++        if service.isUsable, editing || !service.presets.isEmpty {
++            VStack(alignment: .leading, spacing: 7) {
++                if editing { saveButton }
++                if !service.presets.isEmpty { grid }
++                if let failure = service.failure { failureText(failure) }
++                Divider()
++            }
++            .onAppear {
++                service.refresh()
++                // A failure from an earlier visit has had its answer; carrying
++                // it into a fresh panel would describe a problem that may be
++                // long gone.
++                service.clearFailure()
++            }
++            .onChange(of: editing) { _, _ in service.clearFailure() }
++        }
++    }
++
++    private var saveButton: some View {
++        Button {
++            service.saveCurrent()
++        } label: {
++            HStack(spacing: 5) {
++                Image(systemName: "plus")
++                    .font(.system(size: 10, weight: .bold))
++                Text(strings.saveArrangement)
++                    .font(.system(size: 11, weight: .semibold))
++            }
++            .foregroundStyle(selectedTint)
++            .frame(maxWidth: .infinity)
++            .padding(.vertical, 7)
++            .contentShape(Rectangle())
++            .overlay(
++                RoundedRectangle(cornerRadius: 8, style: .continuous)
++                    .strokeBorder(selectedTint.opacity(0.45),
++                                  style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
++            )
++        }
++        .buttonStyle(.plain)
++    }
++
++    /// An adaptive grid rather than a fixed number of columns: the strip has to
++    /// survive both the 308pt panel and a Dynamic Island sized down to its
++    /// 360pt minimum, where a hard-coded five per row overflows.
++    private var grid: some View {
++        LazyVGrid(columns: [GridItem(.adaptive(minimum: slotWidth, maximum: slotWidth),
++                                     spacing: 8, alignment: .leading)],
++                  alignment: .leading,
++                  spacing: 6) {
++            ForEach(service.presets) { preset in
++                thumbnail(preset)
++            }
++        }
++    }
++
++    private func thumbnail(_ preset: DisplayArrangementPreset) -> some View {
++        let applicable = DisplayArrangementSupport.matches(preset, connected: service.connectedKeys)
++        let isActive = service.activePresetID == preset.id
++        // The badge is a sibling of the button, not an overlay on it: a
++        // disabled button disables its own subtree, and the badge is shown
++        // in exactly the state that disables the button.
++        return ZStack(alignment: .topLeading) {
++            Button {
++                service.apply(preset)
++            } label: {
++                ArrangementThumbnail(slots: preset.slots,
++                                     tint: isActive ? selectedTint : Color.secondary,
++                                     mainKey: service.mainDisplayKey)
++                    .frame(width: 42, height: 28)
++                    .padding(4)
++                    .background(
++                        RoundedRectangle(cornerRadius: 8, style: .continuous)
++                            .fill(containerFill(isActive: isActive))
++                    )
++                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
++            }
++            .buttonStyle(.plain)
++            .disabled(editing || !applicable)
++            .opacity(applicable ? 1 : 0.4)
++            .accessibilityLabel(accessibilityLabel(preset, applicable: applicable, isActive: isActive))
++
++            if editing { deleteBadge(preset) }
++        }
++        // On the container, so the reason a preset is dimmed stays readable
++        // even though the button under it is disabled.
++        .help(tooltip(preset, applicable: applicable))
++    }
++
++    private func deleteBadge(_ preset: DisplayArrangementPreset) -> some View {
++        Button {
++            service.delete(preset.id)
++        } label: {
++            Image(systemName: "minus")
++                .font(.system(size: 8, weight: .black))
++                .foregroundStyle(badgeGlyph)
++                .frame(width: 14, height: 14)
++                .background(Circle().fill(badgeFill))
++                .contentShape(Circle())
++        }
++        .buttonStyle(.plain)
++        .offset(x: -3, y: -3)
++        .help(strings.deleteArrangement)
++        .accessibilityLabel(strings.deleteArrangement)
++    }
++
++    private func failureText(_ failure: DisplayArrangementService.Failure) -> some View {
++        Text(failureMessage(failure))
++            .font(.system(size: 10.5))
++            .foregroundStyle(failure == .applyFailed ? Color.red : Color.secondary)
++            .fixedSize(horizontal: false, vertical: true)
++    }
++
++    private func failureMessage(_ failure: DisplayArrangementService.Failure) -> String {
++        switch failure {
++        case .applyFailed: return strings.applyFailed
++        case .duplicate: return strings.duplicate
++        case .limitReached:
++            return String(format: strings.limitReached, DisplayArrangementSupport.maximumPresets)
++        }
++    }
++
++    // MARK: - Colors
++
++    /// The panel already has a rule for "this one is selected", and it drops
++    /// the accent entirely inside the Dynamic Island, where the whole surface
++    /// is monochrome on black. See `MenuPanelView.sectionNavigation` and
++    /// `navigationActiveFill`.
++    private var selectedTint: Color { notchPresentation ? .white : .accentColor }
++
++    private func containerFill(isActive: Bool) -> Color {
++        guard isActive else { return .clear }
++        if notchPresentation { return Color.white.opacity(0.12) }
++        return Color.accentColor.opacity(colorScheme == .light ? 0.13 : 0.20)
++    }
++
++    /// The badge reads as a solid dot against whatever it sits on, so it
++    /// inverts with the appearance. The Dynamic Island forces a dark scheme,
++    /// which is why checking the scheme alone covers it.
++    private var badgeFill: Color {
++        colorScheme == .dark ? Color.white.opacity(0.9) : Color.black.opacity(0.75)
++    }
++
++    private var badgeGlyph: Color {
++        colorScheme == .dark ? .black : .white
++    }
++
++    // MARK: - Describing a layout in words
++
++    private func tooltip(_ preset: DisplayArrangementPreset, applicable: Bool) -> String {
++        guard applicable else {
++            let missing = DisplayArrangementSupport.missingDisplayNames(
++                preset, connected: service.connectedKeys)
++            return String(format: strings.needsDisplays, missing.joined(separator: ", "))
++        }
++        return describe(preset)
++    }
++
++    private func accessibilityLabel(_ preset: DisplayArrangementPreset,
++                                    applicable: Bool,
++                                    isActive: Bool) -> String {
++        let base = tooltip(preset, applicable: applicable)
++        guard isActive else { return base }
++        return "\(base), \(strings.currentArrangement)"
++    }
++
++    /// Two displays, the case this exists for, get a spatial sentence. Beyond
++    /// that a relation to the main display stops describing the layout, so the
++    /// count is the honest answer.
++    private func describe(_ preset: DisplayArrangementPreset) -> String {
++        let fallback = String(format: strings.displayCount, preset.slots.count)
++        guard preset.slots.count == 2,
++              let main = DisplayArrangementSupport.mainSlot(preset.slots),
++              let other = DisplayArrangementSupport.describingSlot(preset) else { return fallback }
++        let format: String
++        switch DisplayArrangementSupport.relation(of: other, to: main) {
++        case .left: format = strings.relationLeft
++        case .right: format = strings.relationRight
++        case .above: format = strings.relationAbove
++        case .below: format = strings.relationBelow
++        case .overlapping: return fallback
++        }
++        return String(format: format, other.name, main.name)
++    }
++}
++
++/// Marks which display owns the menu bar, and moves it on click. Sits in the
++/// display's own row rather than in a switcher of its own, so the question
++/// "which one is main" is answered where the display is already named.
++struct MainDisplayStar: View {
++    @ObservedObject private var l10n = L10n.shared
++    @ObservedObject private var service = DisplayArrangementService.shared
++    @Environment(\.notchPresentation) private var notchPresentation
++    let display: BrightnessDisplay
++
++    private var strings: DisplayArrangementStrings {
++        FeatureStrings.displayArrangement(l10n.language)
++    }
++
++    private var isMain: Bool { service.mainDisplayID == display.id }
++    /// Exactly one display is always main, so this is a radio rather than a
++    /// checkbox: the starred row has nothing to toggle, and a display that is
++    /// switched off cannot hold a menu bar.
++    private var actionable: Bool { !isMain && display.isActive }
++
++    var body: some View {
++        Button {
++            // Refused here rather than with `.disabled`: a disabled button
++            // draws its label dimmed, and the filled star has to read at full
++            // strength to say which display is main.
++            guard actionable else { return }
++            service.makeMain(display.id)
++        } label: {
++            Image(systemName: isMain ? "star.fill" : "star")
++                .font(.system(size: 10, weight: .semibold))
++                .foregroundStyle(isMain ? AnyShapeStyle(notchPresentation ? Color.white
++                                                                          : Color.accentColor)
++                                        : AnyShapeStyle(.tertiary))
++                .frame(width: 16, height: 16)
++                .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .help(isMain ? strings.mainDisplay : strings.makeMainDisplay)
++        .accessibilityLabel(isMain ? strings.mainDisplay : strings.makeMainDisplay)
++    }
++}
++
++/// A saved arrangement drawn to scale: the displays as they sit, with the one
++/// holding the menu bar filled more strongly so its home is visible in a 42pt
++/// picture. The tint is the caller's, so the strip can spend the accent on the
++/// arrangement that is actually in use.
++struct ArrangementThumbnail: View {
++    let slots: [DisplaySlot]
++    let tint: Color
++    /// Where the menu bar lives *now*, not where it lived when this
++    /// arrangement was saved: applying one no longer moves it, so drawing the
++    /// saved main display would promise something that will not happen.
++    let mainKey: String?
++
++    var body: some View {
++        Canvas { context, size in
++            guard let box = DisplayArrangementSupport.boundingBox(slots) else { return }
++            let scale = min(size.width / box.width, size.height / box.height)
++            let originX = (size.width - box.width * scale) / 2
++            let originY = (size.height - box.height * scale) / 2
++            for slot in slots {
++                let rect = CGRect(x: originX + (Double(slot.x) - box.minX) * scale,
++                                  y: originY + (Double(slot.y) - box.minY) * scale,
++                                  width: Double(slot.width) * scale,
++                                  height: Double(slot.height) * scale)
++                    .insetBy(dx: 0.75, dy: 0.75)
++                guard rect.width > 0, rect.height > 0 else { continue }
++                let shape = Path(roundedRect: rect, cornerRadius: 1.5)
++                let carriesMenuBar = slot.key == mainKey
++                context.fill(shape, with: .color(tint.opacity(carriesMenuBar ? 0.55 : 0.24)))
++                context.stroke(shape, with: .color(tint.opacity(0.9)), lineWidth: 0.75)
++            }
++        }
++        .accessibilityHidden(true)
++    }
++}
+diff --git a/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift b/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift
+index 50588dde..7eaaf8d4 100644
+--- a/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift
++++ b/Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift
+@@ -10,6 +10,7 @@ struct BrightnessSection: View {
+     @ObservedObject private var l10n = L10n.shared
+     @ObservedObject private var service = BrightnessService.shared
+     @ObservedObject private var permissions = Permissions.shared
++    @ObservedObject private var arrangements = DisplayArrangementService.shared
+     @AppStorage(DefaultsKey.brightnessOSDEnabled) private var brightnessOSDEnabled = false
+     @AppStorage(DefaultsKey.brightnessKeysEnabled) private var brightnessKeysEnabled = false
+     @State private var optionsExpanded = false
+@@ -18,8 +19,11 @@ struct BrightnessSection: View {
+     private var strings: BrightnessFeatureStrings { FeatureStrings.brightness(l10n.language) }
+ 
+     var body: some View {
+-        PanelSection(.brightness, title: strings.pageTitle, collapsible: collapsible) {
++        PanelSection(.brightness, title: strings.pageTitle, collapsible: collapsible,
++                     supportsEditing: true,
++                     editButtonVisible: arrangements.isUsable) { editing in
+             VStack(alignment: .leading, spacing: 10) {
++                ArrangementStrip(editing: editing)
+                 if service.displays.isEmpty {
+                     Text(strings.noDisplays)
+                         .font(.system(size: 10.5))
+@@ -61,6 +65,7 @@ struct BrightnessSection: View {
+             .onAppear {
+                 service.refresh()
+                 service.refreshKeyboardLight()
++                arrangements.syncWithPreferences()
+             }
+         }
+     }
+@@ -125,6 +130,11 @@ struct BrightnessSection: View {
+                     .font(.system(size: 11.5, weight: .medium))
+                     .lineLimit(1)
+                     .truncationMode(.middle)
++                // Only worth asking which display is main when there is more
++                // than one to choose between.
++                if arrangements.isUsable {
++                    MainDisplayStar(display: display)
++                }
+                 Spacer(minLength: 4)
+                 if display.isActive, display.method != nil {
+                     Text("\(Int((display.brightness * 100).rounded()))%")
