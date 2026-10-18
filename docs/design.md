@@ -5,7 +5,8 @@ the choices that look odd have a reason here.
 
 ## Footprint
 
-The patch adds four files to Vorssaint and edits one:
+A patch set has two files. `01-displays.patch` adds four files to Vorssaint
+and edits one:
 
 | File | Role |
 |---|---|
@@ -104,3 +105,48 @@ every surface.
 
 Check every visual change in the light panel, the dark panel and the Dynamic
 Island.
+
+## The update hook
+
+`02-update-hook.patch` makes Vorssaint's own update banner Castling's update
+path. It adds `Services/Update/CastlingUpdates.swift` and edits
+`Services/Update/UpdateService.swift` in two places:
+
+1. **The filter, in `check(manual:)`.** Before Vorssaint picks a release to
+   offer, every release Castling's `supported.json` doesn't list as
+   `supported` is dropped. If the list can't be read (offline, GitHub down),
+   nothing is offered: an update that silently removes Castling is worse than
+   one that arrives an hour later.
+2. **The redirect, at the top of `downloadAndInstall()`,** the Update
+   button's one entry point. Instead of downloading the official DMG, it runs
+   Castling's installer for that version and shows "Installing…". The
+   installer builds the patched app, replaces this one and relaunches it.
+
+Why it's shaped this way:
+
+- **Not in `UpdateServiceSupport.swift`.** That file is compiled into
+  upstream's test build (`build.sh` `TEST_SOURCES`), where Castling's code
+  would not compile.
+- **Its own `URLSession`, never `URLSession.shared`.** The filter runs inside
+  the release check's shared-session callback and waits for `supported.json`.
+  A request on the shared session would be answered on the queue that wait is
+  holding: a deadlock that left "Checking…" spinning forever and stalled every
+  other shared-session request in the app.
+- **The installer runs detached,** through a shell that exits at once, so the
+  app is not its ancestor. Upstream's `build.sh --install` quits the running
+  app with `pkill`, which never matches its own ancestors; started directly,
+  the old app survived the update and kept showing "Installing…".
+- **Failure is noticed by polling.** A detached installer can't report back,
+  so the app checks every few seconds whether it is still running. If it has
+  stopped and this app is still alive, the update failed (success replaces
+  and relaunches the app): it posts a notification and offers the update
+  again.
+- **Where the installer lives** is recorded by `install` in
+  `~/Library/Application Support/castling/installer`, so the button works
+  wherever Castling was cloned. The installer's output goes to `update.log`
+  beside it.
+- **Testing a release under review:**
+  `defaults write com.vorssaint.utils castlingCandidate -int <PR>` points both
+  the filter and the installer at that pull request.
+- **Betas** follow Vorssaint's own beta setting, but only versions in
+  `supported.json` are ever offered.
