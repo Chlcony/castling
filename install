@@ -7,6 +7,7 @@
 #   ./install                  the version you have now, or the newest supported
 #   ./install 3.4.1            a specific Vorssaint version
 #   ./install --candidate 12   a patch still under review, from pull request 12
+#   ./install --restore        put back one of the saved backups, in seconds
 #
 # Never uses sudo. Backs up the current app first and restores it if anything
 # fails, so you are never left without a working Vorssaint.
@@ -32,18 +33,92 @@ ask_yes() { # ask_yes "question" → true on yes; default yes; false without a t
 
 # --- arguments ---------------------------------------------------------------
 
+# Kept whole for the restart after Castling updates itself, which happens after
+# the loop below has consumed them.
+args=("$@")
 target=""
 candidate=""
+restore_pick=""
+restoring=0
 while (( $# )); do
     case "$1" in
         --candidate) candidate="${2:?--candidate needs a pull request number}"; shift ;;
-        -h|--help) sed -n '5,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --restore)
+            restoring=1
+            if [[ -n "${2:-}" && "$2" != -* ]]; then restore_pick="$2"; shift; fi ;;
+        -h|--help) sed -n '5,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) fail "Unknown option $1. Run ./install --help." ;;
         *) target="$1" ;;
     esac
     shift
 done
 [[ -z "$candidate" || "$candidate" =~ ^[0-9]+$ ]] || fail "--candidate takes a pull request number."
+
+# One install at a time: the Update button and Terminal could otherwise build
+# and swap the app at the same moment. mkdir is atomic; a lock left by a run
+# that died is recognised by its process being gone.
+mkdir -p "$state"
+lock="$state/install.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+    holder="$(cat "$lock/pid" 2>/dev/null || true)"
+    # The restart after a self-update keeps this process id and its lock.
+    if [[ "$holder" != "$$" ]] && [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+        fail "Another Castling install is already running (process $holder). Wait for it to finish."
+    fi
+    if [[ "$holder" != "$$" ]]; then rm -rf "$lock"; mkdir "$lock"; fi
+fi
+echo $$ >"$lock/pid"
+cleanup() { rm -rf "$lock" "${work:-}"; }
+trap cleanup EXIT
+
+# --- restore a backup ----------------------------------------------------------
+
+# Before the preflight on purpose: putting a saved app back needs no network
+# and no developer tools.
+if (( restoring )); then
+    backups=()
+    while IFS= read -r b; do backups+=("$b"); done < <(
+        ls -1d "$state/backups"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-Vorssaint-*.app \
+            2>/dev/null | sort -r)
+    (( ${#backups[@]} )) || fail "There are no backups to restore."
+
+    describe() { # describe <app> → "3.4.1, official" or "3.4.1, with Castling"
+        local v kind
+        v="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null || echo "?")"
+        if codesign -dv "$1" 2>&1 | grep -q "TeamIdentifier=$official_team"; then kind="official"
+        else kind="with Castling"; fi
+        printf '%s, %s' "$v" "$kind"
+    }
+
+    if [[ -z "$restore_pick" ]]; then
+        say "Backups, newest first:"
+        for i in "${!backups[@]}"; do
+            name="$(basename "${backups[$i]}")"
+            stamp="${name:0:4}-${name:4:2}-${name:6:2} ${name:9:2}:${name:11:2}"
+            printf '  %d. %s  (%s)\n' $((i + 1)) "$stamp" "$(describe "${backups[$i]}")"
+        done
+        [[ -t 0 ]] || fail "Run again with the number to restore, e.g. ./install --restore 1"
+        read -r -p "Restore which one? " restore_pick
+    fi
+    [[ "$restore_pick" =~ ^[0-9]+$ ]] && (( restore_pick >= 1 && restore_pick <= ${#backups[@]} )) \
+        || fail "Pick a number from 1 to ${#backups[@]}."
+    chosen="${backups[$((restore_pick - 1))]}"
+
+    step "Restoring $(basename "$chosen")"
+    osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
+    for _ in {1..50}; do pgrep -f "$app/Contents/MacOS/" >/dev/null || break; sleep 0.2; done
+    pgrep -f "$app/Contents/MacOS/" >/dev/null && fail "Vorssaint is still running. Quit it and try again."
+    if [[ -d "$app" ]]; then
+        ditto "$app" "$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || echo unknown).app"
+    fi
+    rm -rf "$app"
+    ditto "$chosen" "$app"
+    open "$app"
+    say "✓ Restored Vorssaint $(describe "$app"). The app you had is saved as the newest backup."
+    say "  If this switched between the official app and a Castling build, macOS may"
+    say "  need Accessibility and Screen Recording granted again."
+    exit 0
+fi
 
 # --- 1. preflight ------------------------------------------------------------
 
@@ -69,12 +144,11 @@ if [[ -d "$here/.git" && "${CASTLING_UPDATED:-0}" != 1 ]]; then
   files in $here, undo those changes and run this again. Nothing was changed."
     if [[ "$(git -C "$here" rev-parse HEAD)" != "$before" ]]; then
         say "Updated Castling."
-        CASTLING_UPDATED=1 exec "$here/install" "$@"
+        CASTLING_UPDATED=1 exec "$here/install" ${args[@]+"${args[@]}"}
     fi
 fi
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
 
 # --- 2. where the patch comes from -------------------------------------------
 

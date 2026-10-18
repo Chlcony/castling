@@ -82,6 +82,15 @@ version. You can also update from Terminal:
 ~/castling/install
 ```
 
+## Undo an update
+
+Every install backs up the app it replaces, keeping the three newest. To put
+one back, which takes seconds and needs no network:
+
+```sh
+~/castling/install --restore
+```
+
 ## Go back to the official app
 
 ```sh
