@@ -20,6 +20,15 @@ say()  { printf '%s\n' "$*"; }
 step() { printf '\n▸ %s\n' "$*"; }
 fail() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
 
+# Keep the three newest backups this script family made (date-stamped names);
+# anything else in the folder belongs to the person and is left alone.
+prune_backups() {
+    local dir="$state/backups" old
+    [[ -d "$dir" ]] || return 0
+    ls -1d "$dir"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-Vorssaint-*.app 2>/dev/null \
+        | sort -r | tail -n +4 | while IFS= read -r old; do rm -rf "$old"; done
+}
+
 ask_yes() {
     local reply
     [[ -t 0 ]] || return 1
@@ -96,6 +105,7 @@ if ask_yes "Clear the old Accessibility and Screen Recording grants now?"; then
 fi
 
 rm -f "$state/installed.json"
+prune_backups
 open "$app"
 say ""
 say "✓ The official Vorssaint $version is running. Your settings are unchanged;"

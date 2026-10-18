@@ -57,7 +57,7 @@ supported one if you have none), or a specific one with `~/castling/install 3.4.
    reviewed against, and stops if it doesn't;
 2. applies the patch, runs its tests, builds, and self-tests the result;
 3. backs up your current app to `~/Library/Application Support/castling/backups/`
-   and puts it back if anything fails;
+   (keeping the three newest) and puts it back if anything fails;
 4. keeps all your Vorssaint settings;
 5. explains the one permissions step below.
 
