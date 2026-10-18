@@ -11,8 +11,18 @@ upstream="${1:?usage: tests/run <patched upstream checkout>}"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
-swiftc -O -o "$out/castling-tests" \
-    "$upstream/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift" \
-    "$here/DisplayArrangementTests.swift" \
-    "$here/main.swift"
+sources=(
+    "$upstream/Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift"
+    "$here/DisplayArrangementTests.swift"
+)
+flags=()
+# The update hook's tests, when the patch set being tested includes the hook.
+hook="$upstream/Sources/Vorssaint/Services/Update/CastlingUpdateSupport.swift"
+if [[ -f "$hook" ]]; then
+    sources+=("$upstream/Sources/Vorssaint/Services/Update/UpdateServiceSupport.swift" "$hook"
+              "$here/CastlingUpdateTests.swift")
+    flags+=(-D CASTLING_UPDATE_HOOK)
+fi
+
+swiftc -O ${flags[@]+"${flags[@]}"} -o "$out/castling-tests" "${sources[@]}" "$here/main.swift"
 "$out/castling-tests"

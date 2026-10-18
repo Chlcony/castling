@@ -19,6 +19,9 @@ final class TestSuite {
 
 let suite = TestSuite()
 DisplayArrangementTests.run(suite)
+#if CASTLING_UPDATE_HOOK
+CastlingUpdateTests.run(suite)
+#endif
 if suite.checks == 0 { suite.expect(false, "no assertions ran") }
 if suite.failures.isEmpty {
     print("PATCH TESTS OK (\(suite.checks) checks)")
