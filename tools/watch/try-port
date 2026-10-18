@@ -1,0 +1,136 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Usage: tools/watch/try-port <version> [--export] [--patches <set>]
+# Applies a patch set to Vorssaint <version> unchanged and runs the full
+# verification from CLAUDE.md. The set is the newest supported version's
+# unless --patches names a folder under patches/. With --export, a passing run
+# also adds <version> to supported.json pointing at that set, and refreshes the
+# README's compatibility table. No files are copied: versions the patch fits
+# unchanged share one set.
+#
+# Exit status: 0 passed, 3 the patch did not apply, 4 it applied but a check
+# failed. Logs land in $CASTLING_LOGS (default: a temporary directory).
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+version="${1:?usage: tools/watch/try-port <version> [--export] [--patches <set>]}"
+shift
+export_result=0
+set_override=""
+while (( $# )); do
+    case "$1" in
+        --export) export_result=1 ;;
+        --patches) set_override="${2:?--patches needs a folder name}"; shift ;;
+        *) echo "Unknown option $1" >&2; exit 4 ;;
+    esac
+    shift
+done
+upstream="https://github.com/vorssaint/vorssaint-utils.git"
+logs="${CASTLING_LOGS:-$(mktemp -d)}"
+mkdir -p "$logs"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+out() { [[ -n "${GITHUB_OUTPUT:-}" ]] && echo "$1" >>"$GITHUB_OUTPUT"; echo "$1"; }
+step() { printf '\n▸ %s\n' "$*"; }
+
+# The patch set to carry forward: the newest supported version's, by default.
+base="$(python3 - "$root/supported.json" <<'PY'
+import json, sys
+def order(v):
+    b, _, p = v["version"].partition("-")
+    return (tuple(int(n) for n in b.split(".")), 0 if p else 1, p)
+# A set held back as in-development still counts: it is the newest patch.
+rs = [r for r in json.load(open(sys.argv[1]))["releases"]
+      if r["status"] in ("supported", "in-development") and r.get("patches")]
+print((max(rs, key=order).get("patches") or max(rs, key=order)["version"]) if rs else "")
+PY
+)"
+base="${set_override:-$base}"
+[[ -n "$base" && -d "$root/patches/$base" ]] || { echo "No patch set to carry forward (patches/$base)." >&2; exit 4; }
+out "base=$base"
+
+commit="$(git ls-remote "$upstream" "refs/tags/v$version^{}" | cut -f1)"
+[[ -n "$commit" ]] || commit="$(git ls-remote "$upstream" "refs/tags/v$version" | cut -f1)"
+[[ -n "$commit" ]] || { echo "Vorssaint has no tag v$version." >&2; exit 4; }
+out "commit=$commit"
+
+step "Cloning Vorssaint v$version"
+git clone --quiet --depth 1 --branch "v$version" "$upstream" "$work/patched" 2>/dev/null
+
+step "Applying patches/$base"
+if ! git -C "$work/patched" -c user.name=Castling -c user.email=castling@localhost \
+        am -3 "$root/patches/$base"/*.patch >"$logs/apply.log" 2>&1; then
+    git -C "$work/patched" diff --name-only --diff-filter=U >"$logs/conflicts.txt" || true
+    cat "$logs/apply.log"
+    out "result=conflict"
+    exit 3
+fi
+
+fail() { echo "✗ $1" >&2; out "result=failed"; out "failed_check=$1"; exit 4; }
+
+step "Checking the footprint"
+git -C "$work/patched" diff --stat "v$version" | tee "$logs/footprint.txt"
+allowed='^(Sources/Vorssaint/UI/MenuPanel/BrightnessSection\.swift|Sources/Vorssaint/Services/Update/UpdateService\.swift)$'
+while read -r file; do
+    git -C "$work/patched" cat-file -e "v$version:$file" 2>/dev/null || continue  # new file: fine
+    [[ "$file" =~ $allowed ]] || fail "the patch edits upstream file $file"
+done < <(git -C "$work/patched" diff --name-only "v$version")
+
+step "Building"
+(cd "$work/patched" && ./build.sh) >"$logs/build.log" 2>&1 || { tail -40 "$logs/build.log"; fail "build"; }
+if grep -q "warning:" "$logs/build.log"; then
+    grep "warning:" "$logs/build.log" | sort -u | head -20
+    fail "build warnings"
+fi
+
+step "Patch tests"
+"$root/tests/run" "$work/patched" | tee "$logs/patch-tests.log" | tail -1
+[[ "${PIPESTATUS[0]}" == 0 ]] || fail "patch tests"
+
+step "Self-test"
+"$work/patched/build/stage/Vorssaint.app/Contents/MacOS/Vorssaint" --selftest >"$logs/selftest.log" 2>&1 || true
+grep -q "SELFTEST OK" "$logs/selftest.log" || { cat "$logs/selftest.log"; fail "self-test"; }
+echo "SELFTEST OK"
+
+# Upstream's suite has failures of its own (some depend on the machine's
+# displays), so a failure only counts against the patch if a clean run of the
+# same tag on the same machine passes that check.
+failures() { grep -v sandbox_extension "$1" | sed -n '/^TESTS FAILED/,/^[^ ]/p' | grep '^  - ' | sort -u; }
+
+step "Upstream's test suite"
+if (cd "$work/patched" && ./build.sh --test) >"$logs/upstream-tests.log" 2>&1; then
+    echo "TESTS OK"
+else
+    step "Upstream's suite failed; running it on clean v$version to compare"
+    git clone --quiet --depth 1 --branch "v$version" "$upstream" "$work/clean" 2>/dev/null
+    (cd "$work/clean" && ./build.sh --test) >"$logs/clean-tests.log" 2>&1 || true
+    new="$(comm -23 <(failures "$logs/upstream-tests.log") <(failures "$logs/clean-tests.log"))"
+    if [[ -n "$new" ]]; then
+        echo "$new"
+        fail "upstream tests (fails only with the patch)"
+    fi
+    echo "Same failures as clean v$version:"
+    failures "$logs/clean-tests.log"
+fi
+
+out "result=passed"
+
+(( export_result )) || exit 0
+
+step "Adding $version to supported.json, using patches/$base"
+python3 - "$root/supported.json" "$version" "$commit" "$base" <<'PY'
+import json, sys
+path, version, commit, patches = sys.argv[1:]
+data = json.load(open(path))
+data["releases"] = [r for r in data["releases"] if r["version"] != version]
+data["releases"].append({"version": version, "commit": commit, "patches": patches,
+                         "patch": f"{version}+castling.1", "status": "supported"})
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+"$root/tools/watch/compat-table"
+echo "✓ supported.json and README updated"

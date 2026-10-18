@@ -124,8 +124,11 @@ fi
 
 commit="$(field "$entry" commit)"
 patch="$(field "$entry" patch)"
-patches="$src/patches/$target"
-ls "$patches"/*.patch >/dev/null 2>&1 || fail "No patch files in patches/$target."
+# Versions whose patch carried over unchanged share one patch set.
+set_name="$(field "$entry" patches)"
+set_name="${set_name:-$target}"
+patches="$src/patches/$set_name"
+ls "$patches"/*.patch >/dev/null 2>&1 || fail "No patch files in patches/$set_name."
 
 say "Installing Vorssaint $target with Castling ${patch:-candidate}."
 [[ -n "$installed" ]] && say "Currently installed: Vorssaint $installed."

@@ -1,0 +1,43 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Usage: tools/watch/notify <version> <kind> <message file> [--close]
+#
+# Every message about one Vorssaint release goes to a single issue thread,
+# "Vorssaint <version>" (GitHub emails the owner on each comment), and, when
+# TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set, a short Telegram message
+# linking to it. <kind> is the Telegram headline. --close closes the thread.
+# Needs GH_TOKEN and GITHUB_REPOSITORY, as in GitHub Actions.
+set -euo pipefail
+
+version="${1:?version}"
+kind="${2:?kind}"
+body="${3:?message file}"
+close="${4:-}"
+title="Vorssaint $version"
+label="release"
+
+gh label create "$label" --color 1f6feb --description "One thread per Vorssaint release" \
+    >/dev/null 2>&1 || true
+
+issue="$(gh issue list --state open --label "$label" --search "\"$title\" in:title" \
+    --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+if [[ -z "$issue" ]]; then
+    url="$(gh issue create --title "$title" --label "$label" --body-file "$body")"
+    issue="${url##*/}"
+else
+    gh issue comment "$issue" --body-file "$body" >/dev/null
+fi
+link="https://github.com/$GITHUB_REPOSITORY/issues/$issue"
+[[ "$close" == --close ]] && gh issue close "$issue" >/dev/null
+echo "issue=$issue" >>"${GITHUB_OUTPUT:-/dev/null}"
+
+if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
+    curl -fsS -o /dev/null "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+        --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+        --data-urlencode "text=Castling · Vorssaint $version: $kind
+$link" \
+        || echo "Telegram message failed; the issue thread has it." >&2
+fi
+echo "$link"

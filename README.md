@@ -26,9 +26,11 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 
 ## Compatibility
 
+<!-- compat:start -->
 | Vorssaint you have | Use patch | Status |
 |---|---|---|
-| 3.4.1 | `3.4.1+castling.1` | supported |
+| 3.4.1 | `3.4.1+castling.1` | being ported |
+<!-- compat:end -->
 
 Any other version: `./install` tells you it isn't supported and changes
 nothing.

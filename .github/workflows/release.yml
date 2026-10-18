@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Runs after the owner merges a change to supported.json: tags every newly
+# supported version as <upstream>+castling.<n> and closes its release thread.
+# Merging is the approval; this only records it.
+
+name: Record release
+
+on:
+  push:
+    branches: [main]
+    paths: [supported.json]
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - run: |
+          python3 -c 'import json; [print(r["version"], r["patch"]) for r in json.load(open("supported.json"))["releases"] if r["status"] == "supported" and r["patch"]]' |
+          while read -r version patch; do
+            git rev-parse -q --verify "refs/tags/$patch" >/dev/null && continue
+            git tag "$patch"
+            git push origin "refs/tags/$patch"
+            echo "Released $patch: users get it with \`git pull && ./install\`." >"$RUNNER_TEMP/msg.md"
+            if gh issue list --state open --label release --json title \
+                 --jq ".[] | select(.title == \"Vorssaint $version\")" | grep -q .; then
+              tools/watch/notify "$version" "released" "$RUNNER_TEMP/msg.md" --close
+            fi
+          done

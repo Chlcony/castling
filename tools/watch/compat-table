@@ -1,0 +1,27 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Rewrites the README's compatibility table from supported.json, between the
+# <!-- compat:start --> and <!-- compat:end --> markers.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+python3 - "$root/supported.json" "$root/README.md" <<'PY'
+import json, re, sys
+manifest, readme = sys.argv[1:]
+def order(v):
+    b, _, p = v.partition("-")
+    return (tuple(int(n) for n in b.split(".")), 0 if p else 1, p)
+rows = ["| Vorssaint you have | Use patch | Status |", "|---|---|---|"]
+for r in sorted(json.load(open(manifest))["releases"], key=lambda r: order(r["version"]), reverse=True):
+    status = {"supported": "supported", "in-development": "being ported",
+              "unsupported": "not supported"}.get(r["status"], r["status"])
+    rows.append(f"| {r['version']} | {'`' + r['patch'] + '`' if r['patch'] else '—'} | {status} |")
+text = open(readme).read()
+new, n = re.subn(r"(<!-- compat:start -->\n).*?(\n<!-- compat:end -->)",
+                 lambda m: m.group(1) + "\n".join(rows) + m.group(2), text, flags=re.S)
+if n != 1:
+    sys.exit("README.md has no compat markers")
+open(readme, "w").write(new)
+PY

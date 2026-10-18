@@ -1,0 +1,49 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Usage: tools/watch/detect [tag]
+# Prints key=value lines for the newest Vorssaint release that is newer than
+# everything in supported.json, or nothing when there is none. With a tag (e.g. v3.4.1), describes that
+# release instead, listed or not: the manual "would this have worked?" run.
+# TRACK_BETAS=true also considers pre-releases.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+api="https://api.github.com/repos/vorssaint/vorssaint-utils"
+auth=()
+[[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+
+export RELEASES="$(curl -fsSL ${auth[@]+"${auth[@]}"} "$api/releases?per_page=30")"
+python3 - "${1:-}" "${TRACK_BETAS:-false}" "$root/supported.json" <<'PY'
+import json, os, sys
+wanted, betas = sys.argv[1], sys.argv[2] == "true"
+listed = json.load(open(sys.argv[3]))["releases"]
+
+def order(version):
+    # 3.4.2-beta.1 < 3.4.2: a release sorts after all of its betas.
+    base, _, pre = version.partition("-")
+    nums = tuple(int(n) for n in base.split(".") if n.isdigit())
+    tail = tuple(int(n) if n.isdigit() else n for n in pre.split(".")) if pre else ()
+    return (nums, 0 if pre else 1, tail)
+
+known = {r["version"] for r in listed}
+newest = max((order(v) for v in known), default=None)
+for r in json.loads(os.environ["RELEASES"]):
+    if r["draft"]:
+        continue
+    tag = r["tag_name"]
+    version = tag[1:] if tag.startswith("v") else tag
+    if wanted:
+        if tag != wanted:
+            continue
+    elif (r["prerelease"] and not betas) or version in known \
+            or (newest is not None and order(version) <= newest):
+        continue
+    print(f"version={version}")
+    print(f"tag={tag}")
+    print(f"prerelease={str(r['prerelease']).lower()}")
+    print(f"published={r['published_at']}")
+    print(f"url={r['html_url']}")
+    break
+PY

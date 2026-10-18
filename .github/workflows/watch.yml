@@ -1,0 +1,284 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Watches Vorssaint for new releases and ports the Castling patch to them.
+# Deterministic first, AI only when the patch no longer fits, and the owner
+# always merges: nothing here merges, tags or publishes anything.
+#
+# Owner switches (Settings › Secrets and variables › Actions › Variables):
+#   TRACK_BETAS   "true" to port pre-releases too. Default off.
+# Secrets:
+#   ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN   for the AI port
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID           optional Telegram messages
+#
+# A manual run with a tag is a dry run: it reports whether the current patch
+# would apply to that release, and opens nothing and notifies no one. Ticking
+# test_ai also runs the AI port on it, which opens a draft PR titled
+# "TEST — do not merge" for the owner to close.
+
+name: Watch Vorssaint
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Dry run against this Vorssaint tag, e.g. v3.4.1"
+        required: false
+      test_ai:
+        description: "Also run the AI port on that tag, even if the patch fits (opens a draft TEST PR)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+      published: ${{ steps.find.outputs.published }}
+      prerelease: ${{ steps.find.outputs.prerelease }}
+      dry_run: ${{ steps.find.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: find
+        env:
+          TRACK_BETAS: ${{ vars.TRACK_BETAS || 'false' }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          found="$(tools/watch/detect "$TAG")"
+          echo "$found"
+          [[ -n "$found" ]] || { echo "Nothing new."; exit 0; }
+          echo "$found" >>"$GITHUB_OUTPUT"
+          version="$(sed -n 's/^version=//p' <<<"$found")"
+          if [[ -n "$TAG" ]]; then
+            echo "dry_run=true" >>"$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --heads origin "castling/port-$version" >/dev/null; then
+            # A port branch already exists: a PR is waiting for the owner.
+            echo "Port of $version already open."
+            echo "version=" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Close threads for releases this one supersedes
+        if: steps.find.outputs.version != '' && steps.find.outputs.dry_run != 'true'
+        env:
+          VERSION: ${{ steps.find.outputs.version }}
+        run: |
+          gh issue list --state open --label release --json number,title \
+            --jq ".[] | select(.title != \"Vorssaint $VERSION\") | .number" |
+          while read -r n; do
+            gh issue close "$n" --comment "Superseded by Vorssaint $VERSION; test that one instead."
+          done
+
+      - name: "Notify: patch on the way"
+        if: steps.find.outputs.version != '' && steps.find.outputs.dry_run != 'true'
+        env:
+          VERSION: ${{ steps.find.outputs.version }}
+          URL: ${{ steps.find.outputs.url }}
+          PUBLISHED: ${{ steps.find.outputs.published }}
+        run: |
+          title="Vorssaint $VERSION"
+          existing="$(gh issue list --state open --label release --json title \
+            --jq ".[] | select(.title == \"$title\") | .title")"
+          [[ -z "$existing" ]] || exit 0   # already announced on an earlier run
+          printf 'Vorssaint %s is out ([release](%s), %s). Castling is trying the current patch on it now.\n' \
+            "$VERSION" "$URL" "${PUBLISHED%%T*}" >"$RUNNER_TEMP/msg.md"
+          tools/watch/notify "$VERSION" "patch on the way" "$RUNNER_TEMP/msg.md"
+
+  port:
+    needs: detect
+    if: needs.detect.outputs.version != ''
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+      BRANCH: ${{ inputs.test_ai && format('castling/test-ai-{0}', github.run_id) || format('castling/port-{0}', needs.detect.outputs.version) }}
+      TEST_AI: ${{ inputs.test_ai && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: echo "CASTLING_LOGS=$RUNNER_TEMP/logs" >>"$GITHUB_ENV"
+
+      - id: try
+        continue-on-error: true
+        run: |
+          if [[ "${{ needs.detect.outputs.dry_run }}" == true ]]; then
+            tools/watch/try-port "$VERSION"
+          else
+            tools/watch/try-port "$VERSION" --export
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ env.VERSION }}
+          path: ${{ runner.temp }}/logs
+
+
+      # --- clean apply: open the PR ------------------------------------------
+
+      - name: Open PR for the clean apply
+        if: steps.try.outputs.result == 'passed' && needs.detect.outputs.dry_run != 'true'
+        id: pr
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add supported.json README.md
+          git commit -m "feat: support Vorssaint $VERSION"
+          git push origin "$BRANCH"
+          draft=()
+          grep -q '^None open\.' docs/bugs.md || draft=(--draft)
+          {
+            echo "Vorssaint $VERSION fits the existing patch set \`patches/${{ steps.try.outputs.base }}\` with no changes, so this only adds it to supported.json."
+            echo
+            echo "Merging this releases \`$VERSION+castling.1\` to everyone who runs \`./install\`."
+            echo
+            echo "Checks on macos-15: footprint, build without warnings, patch tests, self-test, upstream suite."
+          } >"$RUNNER_TEMP/pr.md"
+          url="$(gh pr create --base main --head "$BRANCH" --title "feat: support Vorssaint $VERSION" \
+            --body-file "$RUNNER_TEMP/pr.md" ${draft[@]+"${draft[@]}"})"
+          echo "url=$url" >>"$GITHUB_OUTPUT"
+          echo "number=${url##*/}" >>"$GITHUB_OUTPUT"
+
+      # --- conflict or failure: hand it to the AI port -------------------------
+
+      - name: Wait out the hotfix window
+        if: steps.try.outputs.result != 'passed' && needs.detect.outputs.dry_run != 'true'
+        id: window
+        env:
+          PUBLISHED: ${{ needs.detect.outputs.published }}
+        run: |
+          age=$(( $(date -u +%s) - $(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PUBLISHED" +%s) ))
+          if (( age < 86400 )); then
+            echo "Released $(( age / 3600 ))h ago; a hotfix often follows within a day. Retrying later."
+            echo "wait=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: AI port
+        if: >-
+          env.TEST_AI == 'true' || (steps.try.outputs.result != 'passed' &&
+          needs.detect.outputs.dry_run != 'true' && steps.window.outputs.wait != 'true')
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          claude_args: --max-turns 200 --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+          prompt: |
+            Port the Castling patch to Vorssaint ${{ env.VERSION }}. Follow CLAUDE.md in
+            this repository exactly; its hard rules are not negotiable.
+
+            The current patch (patches/${{ steps.try.outputs.base }}) did not carry over:
+            result "${{ steps.try.outputs.result }}" ${{ steps.try.outputs.failed_check }}.
+            Logs are in ${{ env.CASTLING_LOGS }}.
+
+            1. Clone Vorssaint at tag v${{ env.VERSION }}, apply the patch with git am -3,
+               and resolve within the minimal footprint and Vorssaint's conventions.
+            2. Run the full verification in CLAUDE.md. `tools/watch/try-port` runs it.
+            3. Write the changed patch as a new set, patches/cl-<today's date, YYYY-MM-DD>/,
+               with git format-patch, renaming each file to CLAUDE.md's scheme
+               (01-displays.patch, ...). Verify it with
+               `tools/watch/try-port ${{ env.VERSION }} --patches cl-<that date> --export`,
+               which also adds the version to supported.json and updates the README.
+            4. Commit on branch ${{ env.BRANCH }}, push, and open a pull request against
+               main titled "feat: support Vorssaint ${{ env.VERSION }}". Describe what
+               upstream changed, what you changed and why, and list the visual checks.
+               Open it as a draft if docs/bugs.md lists an open bug.
+            5. Never merge. If a fix would need another upstream file, or any rule would
+               have to bend, stop and explain in the pull request instead.
+
+            ${{ env.TEST_AI == 'true' && 'THIS IS A TEST RUN of the AI port. Do the whole port as above even if the patch already fits, but open the pull request as a DRAFT whose title starts with "TEST — do not merge:". Nobody will merge it.' || '' }}
+
+      - name: Find the AI port's PR
+        if: >-
+          env.TEST_AI == 'true' || (steps.try.outputs.result != 'passed' &&
+          needs.detect.outputs.dry_run != 'true' && steps.window.outputs.wait != 'true')
+        id: aipr
+        run: |
+          url="$(gh pr list --head "$BRANCH" --json url --jq '.[0].url')"
+          echo "url=$url" >>"$GITHUB_OUTPUT"
+          echo "number=${url##*/}" >>"$GITHUB_OUTPUT"
+
+      # --- notifications -------------------------------------------------------
+
+      - name: "Notify: ready to test and approve"
+        if: needs.detect.outputs.dry_run != 'true' && (steps.pr.outputs.url != '' || steps.aipr.outputs.url != '')
+        env:
+          URL: ${{ steps.pr.outputs.url || steps.aipr.outputs.url }}
+          NUMBER: ${{ steps.pr.outputs.number || steps.aipr.outputs.number }}
+          HOW: ${{ steps.pr.outputs.url != '' && 'applied cleanly' || 'was ported by the AI agent; review its changes closely' }}
+        run: |
+          cat >"$RUNNER_TEMP/msg.md" <<MSG
+          **Ready to test and approve:** \`$VERSION+castling.1\` — $URL
+
+          The patch $HOW. CI passed the footprint check, a build without warnings,
+          the patch tests, the self-test and Vorssaint's own suite.
+
+          **Install the candidate on your Mac:**
+          \`\`\`
+          cd castling && git pull && ./install $VERSION --candidate $NUMBER
+          \`\`\`
+
+          **Check by eye** (tests can't see the panel):
+          - [ ] light panel, dark panel and Dynamic Island look right
+          - [ ] save, apply and delete an arrangement
+          - [ ] starring a display makes it main, and the highlight stays
+          - [ ] applying an arrangement never changes the main display
+
+          Merge the PR to release it.
+          MSG
+          tools/watch/notify "$VERSION" "ready to test and approve" "$RUNNER_TEMP/msg.md"
+
+      - name: "Notify: waiting for the hotfix window"
+        if: steps.window.outputs.wait == 'true'
+        run: |
+          echo "The patch needs porting. Waiting a day in case of a hotfix; the next runs will retry." \
+            >"$RUNNER_TEMP/msg.md"
+          gh issue list --state open --label release --json title,comments \
+            --jq ".[] | select(.title == \"Vorssaint $VERSION\") | .comments[].body" \
+            | grep -q "Waiting a day" || tools/watch/notify "$VERSION" "needs porting, waiting a day" "$RUNNER_TEMP/msg.md"
+
+      - name: "Notify: needs you"
+        if: >-
+          needs.detect.outputs.dry_run != 'true' && steps.window.outputs.wait != 'true' &&
+          steps.pr.outputs.url == '' && steps.aipr.outputs.url == ''
+        run: |
+          {
+            echo "**Needs you:** no candidate for Vorssaint $VERSION."
+            echo
+            echo "Check: ${{ steps.try.outputs.result || 'error' }} ${{ steps.try.outputs.failed_check }}."
+            echo "Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >"$RUNNER_TEMP/msg.md"
+          # Once per release: later runs retry silently until something changes.
+          gh issue list --state open --label release --json title,comments \
+            --jq ".[] | select(.title == \"Vorssaint $VERSION\") | .comments[].body" \
+            | grep -q "Needs you" || tools/watch/notify "$VERSION" "needs you" "$RUNNER_TEMP/msg.md"
+
+      - name: Dry run summary
+        if: always() && needs.detect.outputs.dry_run == 'true'
+        run: |
+          {
+            echo "### Would the patch fit Vorssaint $VERSION?"
+            echo "Result: **${{ steps.try.outputs.result || 'error' }}** ${{ steps.try.outputs.failed_check }}"
+            if [[ "$TEST_AI" == true ]]; then
+              echo
+              echo "AI port test PR: ${{ steps.aipr.outputs.url || 'none opened' }}"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
