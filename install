@@ -1,0 +1,239 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Builds Vorssaint with the Castling patch on this Mac and installs it.
+#
+#   ./install                  the version you have now, or the newest supported
+#   ./install 3.4.1            a specific Vorssaint version
+#   ./install --candidate 12   a patch still under review, from pull request 12
+#
+# Never uses sudo. Backs up the current app first and restores it if anything
+# fails, so you are never left without a working Vorssaint.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+app="/Applications/Vorssaint.app"
+bundle_id="com.vorssaint.utils"
+official_team="3D485NHW29"
+upstream_url="https://github.com/vorssaint/vorssaint-utils.git"
+state="$HOME/Library/Application Support/castling"
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n▸ %s\n' "$*"; }
+fail() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
+
+ask_yes() { # ask_yes "question" → true on yes; default yes; false without a terminal
+    local reply
+    [[ -t 0 ]] || return 1
+    read -r -p "$1 [Y/n] " reply
+    [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
+}
+
+# --- arguments ---------------------------------------------------------------
+
+target=""
+candidate=""
+while (( $# )); do
+    case "$1" in
+        --candidate) candidate="${2:?--candidate needs a pull request number}"; shift ;;
+        -h|--help) sed -n '5,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) fail "Unknown option $1. Run ./install --help." ;;
+        *) target="$1" ;;
+    esac
+    shift
+done
+[[ -z "$candidate" || "$candidate" =~ ^[0-9]+$ ]] || fail "--candidate takes a pull request number."
+
+# --- 1. preflight ------------------------------------------------------------
+
+[[ "$(uname -s)" == Darwin ]] || fail "Castling only runs on macOS."
+major="$(sw_vers -productVersion | cut -d. -f1)"
+(( major >= 14 )) || fail "Vorssaint needs macOS 14 or newer; this Mac has $(sw_vers -productVersion)."
+[[ "$(uname -m)" == arm64 ]] || fail "Vorssaint needs an Apple Silicon Mac."
+xcode-select -p >/dev/null 2>&1 \
+    || fail "Apple's developer tools are missing. Run: xcode-select --install   then run ./install again."
+for tool in git swiftc plutil codesign ditto; do
+    command -v "$tool" >/dev/null || fail "$tool is missing. Run: xcode-select --install"
+done
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# --- 2. where the patch comes from -------------------------------------------
+
+src="$here"
+allowed="supported"
+if [[ -n "$candidate" ]]; then
+    step "Fetching candidate from pull request $candidate"
+    git -C "$here" fetch --quiet origin "pull/$candidate/head" \
+        || fail "Could not fetch pull request $candidate."
+    src="$work/candidate"
+    mkdir -p "$src"
+    git -C "$here" archive FETCH_HEAD | tar -x -C "$src"
+    allowed="supported in-development"
+fi
+
+manifest="$src/supported.json"
+[[ -f "$manifest" ]] || fail "supported.json is missing from $src."
+field() { plutil -extract "releases.$1.$2" raw -o - "$manifest" 2>/dev/null || true; }
+count="$(plutil -extract releases raw -o - "$manifest")"
+
+supported_list() {
+    local i
+    for (( i = 0; i < count; i++ )); do
+        [[ "$(field "$i" status)" == supported ]] && printf '%s\n' "$(field "$i" version)"
+    done | sort -V
+}
+
+installed=""
+[[ -d "$app" ]] && installed="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
+    "$app/Contents/Info.plist" 2>/dev/null || true)"
+
+if [[ -z "$target" ]]; then
+    if [[ -n "$installed" ]]; then target="$installed"
+    else target="$(supported_list | tail -1)"
+    fi
+fi
+[[ -n "$target" ]] || fail "No supported Vorssaint version is listed yet."
+
+# --- 3. is this version supported? -------------------------------------------
+
+entry=""
+for (( i = 0; i < count; i++ )); do
+    [[ "$(field "$i" version)" == "$target" ]] && entry="$i"
+done
+status=""
+[[ -n "$entry" ]] && status="$(field "$entry" status)"
+
+if [[ -z "$entry" || " $allowed " != *" $status "* ]]; then
+    if [[ "$status" == in-development ]]; then
+        say "Castling doesn't support Vorssaint $target yet; it's in development."
+    else
+        say "Castling doesn't support Vorssaint $target."
+    fi
+    say "Your current app is unchanged."
+    newest="$(supported_list | tail -1)"
+    if [[ -n "$newest" ]]; then
+        say ""
+        say "Supported versions: $(supported_list | paste -sd ' ' -)"
+        say "To install Vorssaint $newest with Castling: ./install $newest"
+    fi
+    exit 0
+fi
+
+commit="$(field "$entry" commit)"
+patch="$(field "$entry" patch)"
+patches="$src/patches/$target"
+ls "$patches"/*.patch >/dev/null 2>&1 || fail "No patch files in patches/$target."
+
+say "Installing Vorssaint $target with Castling ${patch:-candidate}."
+[[ -n "$installed" ]] && say "Currently installed: Vorssaint $installed."
+
+# --- 4. fetch upstream at the pinned commit ----------------------------------
+
+step "Downloading Vorssaint $target"
+git clone --quiet --depth 1 --branch "v$target" "$upstream_url" "$work/vorssaint" 2>/dev/null \
+    || fail "Could not download Vorssaint $target from GitHub."
+actual="$(git -C "$work/vorssaint" rev-parse HEAD)"
+[[ "$actual" == "$commit" ]] || fail "Vorssaint's v$target tag now points at a different commit
+  ($actual, expected $commit). Stopping rather than build unreviewed code.
+  Nothing was changed."
+
+# --- 5. patch, test, build ---------------------------------------------------
+
+step "Applying the patch"
+git -C "$work/vorssaint" -c user.name=Castling -c user.email=castling@localhost \
+    am -3 --quiet "$patches"/*.patch >"$work/am.log" 2>&1 \
+    || { cat "$work/am.log" >&2; fail "The patch did not apply. Nothing was changed."; }
+
+step "Testing the patch"
+"$src/tests/run" "$work/vorssaint" >"$work/tests.log" 2>&1 \
+    || { cat "$work/tests.log" >&2; fail "The patch's tests failed. Nothing was changed."; }
+tail -1 "$work/tests.log"
+
+# --- 6. back up --------------------------------------------------------------
+
+backup=""
+was_official=0
+if [[ -d "$app" ]]; then
+    step "Backing up your current Vorssaint"
+    codesign -dv "$app" 2>&1 | grep -q "TeamIdentifier=$official_team" && was_official=1
+    mkdir -p "$state/backups"
+    backup="$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-${installed:-unknown}.app"
+    ditto "$app" "$backup"
+    say "Saved to $backup"
+fi
+
+restore() {
+    if [[ -n "$backup" ]]; then
+        say "Restoring your previous Vorssaint…" >&2
+        rm -rf "$app"
+        ditto "$backup" "$app"
+        open -b "$bundle_id" 2>/dev/null || true
+    fi
+}
+
+# --- 7. build and install ----------------------------------------------------
+
+step "Building and installing (usually 3–5 minutes)"
+if ! (cd "$work/vorssaint" && ./build.sh --install) >"$work/build.log" 2>&1; then
+    tail -30 "$work/build.log" >&2
+    restore
+    fail "The build failed. Your previous app is back in place."
+fi
+if ! "$app/Contents/MacOS/Vorssaint" --selftest 2>/dev/null | grep -q "SELFTEST OK"; then
+    restore
+    fail "The installed app failed its self-test. Your previous app is back in place."
+fi
+say "✓ Installed and self-tested"
+
+# --- 8. Vorssaint's own update check -----------------------------------------
+
+checks="$(defaults read "$bundle_id" autoCheckUpdates 2>/dev/null || echo 1)"
+if [[ "$checks" != 0 ]]; then
+    say ""
+    say "Vorssaint checks for official updates on its own. Accepting one replaces"
+    say "this patched app with the official build, and the Castling features go"
+    say "away (nothing breaks; run ./install again to get them back)."
+    say "Turning the check off is recommended. Updates then come from Castling:"
+    say "  cd castling && git pull && ./install"
+    if ask_yes "Turn off Vorssaint's own update check?"; then
+        defaults write "$bundle_id" autoCheckUpdates -bool false
+        say "Turned off. You can turn it back on in Vorssaint's settings."
+    else
+        say "Left on. If Vorssaint offers an update, decline it until Castling supports it."
+    fi
+fi
+
+# --- 9. permissions ----------------------------------------------------------
+
+if (( was_official )); then
+    say ""
+    say "macOS treats this build as a new app, because you built and signed it"
+    say "yourself. Permissions you gave the official app no longer apply, but"
+    say "System Settings still shows them as granted, and no new prompt appears."
+    say "They need clearing once and granting again. Later updates keep them."
+    if ask_yes "Clear the old Accessibility and Screen Recording grants now?"; then
+        tccutil reset Accessibility "$bundle_id" >/dev/null || true
+        tccutil reset ScreenCapture "$bundle_id" >/dev/null || true
+        say "Cleared. Vorssaint will ask again when it needs them, or turn it on in"
+        say "System Settings › Privacy & Security › Accessibility, and under"
+        say "Screen & System Audio Recording."
+    else
+        say "When you're ready:"
+        say "  tccutil reset Accessibility $bundle_id"
+        say "  tccutil reset ScreenCapture $bundle_id"
+    fi
+fi
+
+# --- done --------------------------------------------------------------------
+
+mkdir -p "$state"
+printf '{ "version": "%s", "patch": "%s", "installed": "%s" }\n' \
+    "$target" "${patch:-candidate-$candidate}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$state/installed.json"
+
+open -b "$bundle_id"
+say ""
+say "✓ Vorssaint $target with Castling is running."
+say "  To go back to the official app: ./uninstall"

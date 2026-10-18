@@ -1,0 +1,11 @@
+{
+  "upstream": "vorssaint/vorssaint-utils",
+  "releases": [
+    {
+      "version": "3.4.1",
+      "commit": "aea106cb5d52045c99810cf672da891d2a20b67d",
+      "patch": "3.4.1+castling.1",
+      "status": "supported"
+    }
+  ]
+}

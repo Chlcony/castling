@@ -1,0 +1,107 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Puts the official Vorssaint back: downloads the maintainer's signed build of
+# the version you have from Vorssaint's own GitHub releases, verifies its
+# signature, and installs it in place of the patched app. Settings are kept.
+#
+#   ./uninstall
+set -euo pipefail
+
+app="/Applications/Vorssaint.app"
+bundle_id="com.vorssaint.utils"
+official_team="3D485NHW29"
+releases="https://github.com/vorssaint/vorssaint-utils/releases/download"
+state="$HOME/Library/Application Support/castling"
+requirement="anchor apple generic and identifier \"$bundle_id\" and certificate leaf[subject.OU] = \"$official_team\""
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n▸ %s\n' "$*"; }
+fail() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
+
+ask_yes() {
+    local reply
+    [[ -t 0 ]] || return 1
+    read -r -p "$1 [Y/n] " reply
+    [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
+}
+
+[[ -d "$app" ]] || fail "There is no Vorssaint in /Applications to replace."
+version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")"
+if codesign -dv "$app" 2>&1 | grep -q "TeamIdentifier=$official_team"; then
+    say "Vorssaint $version in /Applications is already the official build. Nothing to do."
+    exit 0
+fi
+
+work="$(mktemp -d)"
+mounted=""
+cleanup() {
+    [[ -n "$mounted" ]] && hdiutil detach -quiet "$mounted" 2>/dev/null || true
+    rm -rf "$work"
+}
+trap cleanup EXIT
+
+# --- download and verify -----------------------------------------------------
+
+step "Downloading the official Vorssaint $version"
+curl -fsSL -o "$work/Vorssaint.dmg" "$releases/v$version/Vorssaint-$version.dmg" \
+    || fail "Could not download Vorssaint $version from its GitHub releases. Nothing was changed."
+
+hdiutil attach -quiet -nobrowse -readonly -mountpoint "$work/mnt" "$work/Vorssaint.dmg" \
+    || fail "Could not open the downloaded disk image. Nothing was changed."
+mounted="$work/mnt"
+official="$mounted/Vorssaint.app"
+[[ -d "$official" ]] || fail "The disk image has no Vorssaint.app. Nothing was changed."
+
+codesign --verify --deep --strict "$official" 2>/dev/null \
+    && codesign --verify -R="$requirement" "$official" 2>/dev/null \
+    || fail "The download is not signed by Vorssaint's maintainer. Nothing was changed."
+say "✓ Signed by Vorssaint's maintainer"
+
+# --- back up and replace -----------------------------------------------------
+
+step "Backing up the patched app"
+mkdir -p "$state/backups"
+backup="$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-$version-castling.app"
+ditto "$app" "$backup"
+say "Saved to $backup"
+
+step "Installing the official app"
+osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
+for _ in {1..50}; do
+    pgrep -f "$app/Contents/MacOS/" >/dev/null || break
+    sleep 0.2
+done
+pgrep -f "$app/Contents/MacOS/" >/dev/null && fail "Vorssaint is still running. Quit it and run ./uninstall again."
+
+rm -rf "$app"
+if ! ditto "$official" "$app"; then
+    rm -rf "$app"
+    ditto "$backup" "$app"
+    fail "Copying the official app failed. The patched app is back in place."
+fi
+say "✓ Installed the official Vorssaint $version"
+
+# --- settings and permissions ------------------------------------------------
+
+if [[ "$(defaults read "$bundle_id" autoCheckUpdates 2>/dev/null || echo 1)" == 0 ]]; then
+    if ask_yes "Turn Vorssaint's own update check back on?"; then
+        defaults write "$bundle_id" autoCheckUpdates -bool true
+    fi
+fi
+
+say ""
+say "macOS treats the official build as a different app from the one you built,"
+say "so permissions need granting once more."
+if ask_yes "Clear the old Accessibility and Screen Recording grants now?"; then
+    tccutil reset Accessibility "$bundle_id" >/dev/null || true
+    tccutil reset ScreenCapture "$bundle_id" >/dev/null || true
+    say "Cleared. Vorssaint will ask again when it needs them."
+fi
+
+rm -f "$state/installed.json"
+open -b "$bundle_id"
+say ""
+say "✓ The official Vorssaint $version is running. Your settings are unchanged;"
+say "  saved arrangements stay stored, and come back if you run ./install again."
