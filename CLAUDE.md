@@ -83,5 +83,3 @@ service instead of editing `Core/Localization.swift`, to keep the footprint.
    `supported.json`, and open a PR describing what upstream changed and what
    you changed and why.
 5. Never merge.
-
-Say "main display", not "menu bar", in all user-facing text.

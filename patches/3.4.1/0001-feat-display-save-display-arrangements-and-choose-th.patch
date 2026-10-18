@@ -1,4 +1,4 @@
-From ed7fc8860f12e44213d61d8008923e73e1abd452 Mon Sep 17 00:00:00 2001
+From fadf2993e5cf514c9e1f916579f0f5df1cc1e3d9 Mon Sep 17 00:00:00 2001
 From: Chlcony <72945153+Chlcony@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 02:08:36 +0300
 Subject: [PATCH] feat(display): save display arrangements and choose the main
@@ -10,11 +10,11 @@ arrangement moves the screens and keeps the current main display;
 starring a display changes the main display and keeps the arrangement.
 ---
  .../Display/DisplayArrangementService.swift   | 286 +++++++++++++++
- .../Display/DisplayArrangementStrings.swift   | 323 +++++++++++++++++
+ .../Display/DisplayArrangementStrings.swift   | 327 +++++++++++++++++
  .../Display/DisplayArrangementSupport.swift   | 227 ++++++++++++
  .../UI/MenuPanel/ArrangementStrip.swift       | 329 ++++++++++++++++++
  .../UI/MenuPanel/BrightnessSection.swift      |  17 +-
- 5 files changed, 1181 insertions(+), 1 deletion(-)
+ 5 files changed, 1185 insertions(+), 1 deletion(-)
  create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementService.swift
  create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
  create mode 100644 Sources/Vorssaint/Services/Display/DisplayArrangementSupport.swift
@@ -314,10 +314,10 @@ index 00000000..10ccc5f5
 +}
 diff --git a/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift b/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
 new file mode 100644
-index 00000000..6d4589df
+index 00000000..133b2c95
 --- /dev/null
 +++ b/Sources/Vorssaint/Services/Display/DisplayArrangementStrings.swift
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,327 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -330,6 +330,10 @@ index 00000000..6d4589df
 +/// The strip itself carries no text, so most of these are tooltips and
 +/// accessibility labels: a thumbnail has to be able to say what it is to
 +/// somebody who cannot see the shape.
++///
++/// When "Displays have separate Spaces" is off, only the main display shows
++/// a menu bar. Text still says "main display": it's right with the option
++/// on or off, and it's what System Settings calls it.
 +struct DisplayArrangementStrings {
 +    let saveArrangement: String
 +    let deleteArrangement: String

@@ -87,7 +87,9 @@ settings are kept.
 
 ## Contributing
 
-Castling isn't accepting contributions at the moment.
+Castling isn't accepting code contributions at the moment, but suggestions are
+welcome: [open an issue](https://github.com/Chlcony/castling/issues) to report a
+problem or propose an idea.
 
 ## License
 
