@@ -14,9 +14,12 @@ api="https://api.github.com/repos/vorssaint/vorssaint-utils"
 auth=()
 [[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $GH_TOKEN")
 
-export RELEASES="$(curl -fsSL ${auth[@]+"${auth[@]}"} "$api/releases?per_page=30")"
-python3 - "${1:-}" "${TRACK_BETAS:-false}" "$root/supported.json" <<'PY'
-import json, os, sys
+releases="$(mktemp)"
+trap 'rm -f "$releases"' EXIT
+# A file, not a variable: the list is too big for Linux's argument limit.
+curl -fsSL ${auth[@]+"${auth[@]}"} "$api/releases?per_page=30" >"$releases"
+python3 - "${1:-}" "${TRACK_BETAS:-false}" "$root/supported.json" "$releases" <<'PY'
+import json, sys
 wanted, betas = sys.argv[1], sys.argv[2] == "true"
 listed = json.load(open(sys.argv[3]))["releases"]
 
@@ -29,7 +32,7 @@ def order(version):
 
 known = {r["version"] for r in listed}
 newest = max((order(v) for v in known), default=None)
-for r in json.loads(os.environ["RELEASES"]):
+for r in json.load(open(sys.argv[4])):
     if r["draft"]:
         continue
     tag = r["tag_name"]
