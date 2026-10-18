@@ -19,11 +19,11 @@ display, and starring a display never changes the arrangement.
 Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE.md).
 
 > [!IMPORTANT]
-> **Vorssaint keeps offering its own updates.** Installing one before Castling
-> supports that version brings back the official app, without Castling's
-> features; your settings and saved arrangements stay. Run `./install` again
-> once the version is supported: usually soon after its release, but it can
-> take days when the patch needs porting.
+> **Vorssaint's update banner offers a new version only once Castling supports
+> it.** That is usually soon after its release, but it can take days when the
+> patch needs porting. Click **Update** and Castling rebuilds the patched app.
+> If you need an upstream fix right away, `~/castling/uninstall` brings back
+> the official app.
 
 ## Compatibility
 
@@ -73,14 +73,14 @@ updates keep them.
 
 ## Update
 
-Once Castling supports a new Vorssaint release:
+When Castling supports a new Vorssaint release, Vorssaint's own update banner
+offers it. Click **Update**: Castling rebuilds the patched app in the
+background, which takes a few minutes, and Vorssaint restarts as the new
+version. You can also update from Terminal:
 
 ```sh
 ~/castling/install
 ```
-
-It updates Castling itself first, then builds the version of Vorssaint you
-have.
 
 ## Go back to the official app
 
