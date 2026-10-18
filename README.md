@@ -19,11 +19,11 @@ display, and starring a display never changes the arrangement.
 Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE.md).
 
 > [!IMPORTANT]
-> **Vorssaint keeps offering its own updates.** Installing one before Castling
-> supports that version brings back the official app, without Castling's
-> features; your settings and saved arrangements stay. Run `./install` again
-> once the version is supported: usually soon after its release, but it can
-> take days when the patch needs porting.
+> **Vorssaint's update banner offers a new version only once Castling supports
+> it.** That is usually soon after its release, but it can take days when the
+> patch needs porting. Click **Update** and Castling rebuilds the patched app.
+> If you need an upstream fix right away, `~/castling/uninstall` brings back
+> the official app.
 
 ## Compatibility
 
@@ -31,7 +31,7 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 | Vorssaint | Status |
 |---|---|
 | 3.4.2-beta.1 | supported |
-| 3.4.1 | coming soon |
+| 3.4.1 | supported |
 <!-- compat:end -->
 
 Any other version: `./install` tells you it isn't supported and changes
@@ -42,14 +42,17 @@ nothing. Vorssaint betas aren't supported.
 You need macOS 14 or newer on an Apple Silicon Mac. Castling builds Vorssaint
 on your own Mac; nothing prebuilt is downloaded from this repository.
 
+Paste this into Terminal:
+
 ```sh
-xcode-select --install          # once: Apple's developer tools
-git clone https://github.com/Chlcony/castling.git
-cd castling && ./install
+git clone https://github.com/Chlcony/castling.git ~/castling && ~/castling/install
 ```
 
-`./install` builds the version of Vorssaint you already have (or the newest
-supported one if you have none), or a specific one with `./install 3.4.1`. It:
+If macOS offers to install the command line developer tools, accept, wait for
+them to finish, and paste the line again.
+
+`install` builds the version of Vorssaint you already have (or the newest
+supported one if you have none), or a specific one with `~/castling/install 3.4.1`. It:
 
 1. checks that Vorssaint's source matches the exact commit this patch was
    reviewed against, and stops if it doesn't;
@@ -65,22 +68,25 @@ It never uses `sudo`. A build takes a few minutes.
 
 The app you build is signed on your Mac, not by Vorssaint's maintainer, so macOS
 treats it as a new app. Permissions you gave the official app still *look*
-granted in System Settings but no longer apply. `./install` offers to clear them;
+granted in System Settings but no longer apply. `install` offers to clear them;
 then grant Accessibility and Screen & System Audio Recording again. Later
 updates keep them.
 
 ## Update
 
-After a new Vorssaint release is supported:
+When Castling supports a new Vorssaint release, Vorssaint's own update banner
+offers it. Click **Update**: Castling rebuilds the patched app in the
+background, which takes a few minutes, and Vorssaint restarts as the new
+version. You can also update from Terminal:
 
 ```sh
-cd castling && git pull && ./install
+~/castling/install
 ```
 
 ## Go back to the official app
 
 ```sh
-cd castling && ./uninstall
+~/castling/uninstall
 ```
 
 This downloads the official, maintainer-signed Vorssaint of the same version

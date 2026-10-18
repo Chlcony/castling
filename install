@@ -57,6 +57,22 @@ for tool in git swiftc plutil codesign ditto; do
     command -v "$tool" >/dev/null || fail "$tool is missing. Run: xcode-select --install"
 done
 
+# --- keep Castling itself current ----------------------------------------
+
+# Users update with this one command, so it fetches the newest Castling first
+# and restarts as that version. git replaces files rather than rewriting them,
+# so the copy running now is not disturbed.
+if [[ -d "$here/.git" && "${CASTLING_UPDATED:-0}" != 1 ]]; then
+    before="$(git -C "$here" rev-parse HEAD)"
+    git -C "$here" pull --ff-only --quiet 2>"$here/.git/castling-pull.log" \
+        || fail "Couldn't update Castling (see .git/castling-pull.log). If you changed
+  files in $here, undo those changes and run this again. Nothing was changed."
+    if [[ "$(git -C "$here" rev-parse HEAD)" != "$before" ]]; then
+        say "Updated Castling."
+        CASTLING_UPDATED=1 exec "$here/install" "$@"
+    fi
+fi
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -117,7 +133,7 @@ if [[ -z "$entry" || " $allowed " != *" $status "* ]]; then
     if [[ -n "$newest" ]]; then
         say ""
         say "Supported versions: $(supported_list | paste -sd ' ' -)"
-        say "To install Vorssaint $newest with Castling: ./install $newest"
+        say "To install Vorssaint $newest with Castling: $0 $newest"
     fi
     exit 0
 fi
@@ -215,6 +231,8 @@ fi
 # --- done --------------------------------------------------------------------
 
 mkdir -p "$state"
+# Vorssaint's Update button runs this installer from here (patch 02-update-hook).
+printf '%s\n' "$here/install" >"$state/installer"
 printf '{ "version": "%s", "patch": "%s", "installed": "%s" }\n' \
     "$target" "${patch:-candidate-$candidate}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$state/installed.json"
 
@@ -222,6 +240,6 @@ open "$app"
 say ""
 say "✓ Vorssaint $target with Castling is running."
 say ""
-say "If Vorssaint offers an update before Castling supports it, installing it"
-say "brings back the official app without Castling. Run ./install again once"
-say "Castling supports that version. To go back to the official app: ./uninstall"
+say "When Castling supports a new Vorssaint, Vorssaint's own update banner"
+say "offers it: click Update and Castling rebuilds the app for you."
+say "To go back to the official app: $here/uninstall"

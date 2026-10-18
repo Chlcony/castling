@@ -147,7 +147,7 @@ jobs:
           {
             echo "Vorssaint $VERSION fits the existing patch set \`patches/${{ steps.try.outputs.base }}\` with no changes, so this only adds it to supported.json."
             echo
-            echo "Merging this releases \`$VERSION+castling.1\` to everyone who runs \`./install\`."
+            echo "Merging this releases \`$VERSION+${{ steps.try.outputs.base }}\` to everyone who runs \`./install\`."
             echo
             echo "Checks on macos-15: footprint, build without warnings, patch tests, self-test, upstream suite."
           } >"$RUNNER_TEMP/pr.md"
@@ -226,14 +226,14 @@ jobs:
           HOW: ${{ steps.pr.outputs.url != '' && 'applied cleanly' || 'was ported by the AI agent; review its changes closely' }}
         run: |
           cat >"$RUNNER_TEMP/msg.md" <<MSG
-          **Ready to test and approve:** \`$VERSION+castling.1\` — $URL
+          **Ready to test and approve:** Castling for Vorssaint $VERSION — $URL
 
           The patch $HOW. CI passed the footprint check, a build without warnings,
           the patch tests, the self-test and Vorssaint's own suite.
 
           **Install the candidate on your Mac:**
           \`\`\`
-          cd castling && git pull && ./install $VERSION --candidate $NUMBER
+          ./install --candidate $NUMBER      # from your Castling folder
           \`\`\`
 
           **Check by eye** (tests can't see the panel):

@@ -133,7 +133,7 @@ path, version, commit, patches = sys.argv[1:]
 data = json.load(open(path))
 data["releases"] = [r for r in data["releases"] if r["version"] != version]
 data["releases"].append({"version": version, "commit": commit, "patches": patches,
-                         "patch": f"{version}+castling.1", "status": "supported"})
+                         "patch": f"{version}+{patches}", "status": "supported"})
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")

@@ -27,9 +27,11 @@ Design rules and their reasons: `docs/design.md`. Open bugs: `docs/bugs.md`.
   `01-displays.patch` (the Displays section), later `02-update-hook.patch`.
   Versions it fits unchanged reuse it: `supported.json` says which set each
   version uses. Add a new set only when the patch itself has to change.
-- **Versions:** tags are `<upstream>+castling.<n>` (e.g. `3.4.1+castling.1`).
-  Never a `-` suffix: Vorssaint's updater reads it as a pre-release and would
-  offer to replace the patched app. Never change the app's own version string.
+- **Versions:** release tags are `<upstream>+<patch set>` (e.g.
+  `3.4.1+cl-2026-10-18`), written by `release.yml` when the owner merges.
+  Everything after `+` is ignored by Vorssaint's updater; never put the patch
+  name after a `-` instead, which it reads as a pre-release of an older
+  version. Never change the app's own version string.
 - **Minimal footprint.** Add files freely, but edit only
   `Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift` upstream (later also
   two hooks in `Sources/Vorssaint/Services/Update/UpdateService.swift`). Never
