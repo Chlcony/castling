@@ -71,6 +71,10 @@ jobs:
             # A port branch already exists: a PR is waiting for the owner.
             echo "Port of $version already open."
             echo "version=" >>"$GITHUB_OUTPUT"
+          elif gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=release,needs-you&per_page=100" \
+                 --jq ".[].title" | grep -qxF "Vorssaint $version"; then
+            echo "Vorssaint $version is waiting for the owner (needs-you label)."
+            echo "version=" >>"$GITHUB_OUTPUT"
           fi
 
       - name: Close threads for releases this one supersedes
@@ -106,8 +110,10 @@ jobs:
     timeout-minutes: 120
     env:
       VERSION: ${{ needs.detect.outputs.version }}
-      BRANCH: ${{ inputs.test_ai && format('castling/test-ai-{0}', github.run_id) || format('castling/port-{0}', needs.detect.outputs.version) }}
-      TEST_AI: ${{ inputs.test_ai && 'true' || 'false' }}
+      # The AI test only runs as part of a dry run (a manual run with a tag);
+      # otherwise it would open a second PR next to a real port.
+      BRANCH: ${{ inputs.test_ai && inputs.tag && format('castling/test-ai-{0}', github.run_id) || format('castling/port-{0}', needs.detect.outputs.version) }}
+      TEST_AI: ${{ inputs.test_ai && inputs.tag && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -224,16 +230,16 @@ jobs:
           URL: ${{ steps.pr.outputs.url || steps.aipr.outputs.url }}
           NUMBER: ${{ steps.pr.outputs.number || steps.aipr.outputs.number }}
           HOW: ${{ steps.pr.outputs.url != '' && 'applied cleanly' || 'was ported by the AI agent; review its changes closely' }}
+          CHECKS: ${{ steps.pr.outputs.url != '' && 'CI passed the footprint check, a build without warnings, the patch tests, the self-test and Vorssaint''s own suite.' || 'CI did not re-check it; the agent ran the verification itself, so read its PR description for the results.' }}
         run: |
           cat >"$RUNNER_TEMP/msg.md" <<MSG
           **Ready to test and approve:** Castling for Vorssaint $VERSION — $URL
 
-          The patch $HOW. CI passed the footprint check, a build without warnings,
-          the patch tests, the self-test and Vorssaint's own suite.
+          The patch $HOW. $CHECKS
 
           **Install the candidate on your Mac:**
           \`\`\`
-          ./install --candidate $NUMBER      # from your Castling folder
+          ./install $VERSION --candidate $NUMBER      # from your Castling folder
           \`\`\`
 
           **Check by eye** (tests can't see the panel):
@@ -266,10 +272,16 @@ jobs:
             echo "Check: ${{ steps.try.outputs.result || 'error' }} ${{ steps.try.outputs.failed_check }}."
             echo "Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } >"$RUNNER_TEMP/msg.md"
-          # Once per release: later runs retry silently until something changes.
-          gh issue list --state open --label release --json title,comments \
-            --jq ".[] | select(.title == \"Vorssaint $VERSION\") | .comments[].body" \
-            | grep -q "Needs you" || tools/watch/notify "$VERSION" "needs you" "$RUNNER_TEMP/msg.md"
+          echo "Remove the **needs-you** label from this thread to let the watcher try again." \
+            >>"$RUNNER_TEMP/msg.md"
+          tools/watch/notify "$VERSION" "needs you" "$RUNNER_TEMP/msg.md"
+          # Parks the release: detect skips it until the owner removes the label,
+          # instead of re-running the port (and the AI) every hour.
+          gh label create needs-you --color d93f0b --description "The watcher stopped; the owner decides" \
+            >/dev/null 2>&1 || true
+          number="$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=release&per_page=100" \
+            --jq ".[] | select(.title == \"Vorssaint $VERSION\") | .number" | head -1)"
+          [[ -z "$number" ]] || gh issue edit "$number" --add-label needs-you
 
       - name: Dry run summary
         if: always() && needs.detect.outputs.dry_run == 'true'

@@ -34,7 +34,7 @@ jobs:
             git rev-parse -q --verify "refs/tags/$patch" >/dev/null && continue
             git tag "$patch"
             git push origin "refs/tags/$patch"
-            echo "Released $patch: users get it with \`git pull && ./install\`." >"$RUNNER_TEMP/msg.md"
+            echo "Released $patch. Vorssaint's update banner offers it to Castling users; from Terminal: \`~/castling/install $version\`." >"$RUNNER_TEMP/msg.md"
             if gh issue list --state open --label release --json title \
                  --jq ".[] | select(.title == \"Vorssaint $version\")" | grep -q .; then
               tools/watch/notify "$version" "released" "$RUNNER_TEMP/msg.md" --close
