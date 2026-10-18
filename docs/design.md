@@ -109,14 +109,16 @@ Island.
 ## The update hook
 
 `02-update-hook.patch` makes Vorssaint's own update banner Castling's update
-path. It adds `Services/Update/CastlingUpdates.swift` and edits
+path. It adds `Services/Update/CastlingUpdates.swift` (the app side) and
+`CastlingUpdateSupport.swift` (the pure filter, tested in `tests/`), and edits
 `Services/Update/UpdateService.swift` in two places:
 
 1. **The filter, in `check(manual:)`.** Before Vorssaint picks a release to
    offer, every release Castling's `supported.json` doesn't list as
    `supported` is dropped. If the list can't be read (offline, GitHub down),
-   nothing is offered: an update that silently removes Castling is worse than
-   one that arrives an hour later.
+   nothing is offered and the check reports a failure rather than "up to
+   date": an update that silently removes Castling is worse than one that
+   arrives an hour later.
 2. **The redirect, at the top of `downloadAndInstall()`,** the Update
    button's one entry point. Instead of downloading the official DMG, it runs
    Castling's installer for that version and shows "Installing…". The

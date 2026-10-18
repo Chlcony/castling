@@ -88,7 +88,8 @@ service instead of editing `Core/Localization.swift`, to keep the footprint.
 
 - It may only touch `Services/Update/UpdateService.swift`: the filter in
   `check(manual:)` and the redirect at the top of `downloadAndInstall()`.
-  Everything else goes in `CastlingUpdates.swift`. Never edit
+  Everything else goes in `CastlingUpdates.swift`, and logic that needs no
+  AppKit in `CastlingUpdateSupport.swift`, which `tests/` compiles. Never edit
   `UpdateServiceSupport.swift`, which upstream compiles into its test build.
 - Keep `CastlingUpdates` on its own `URLSession`, and keep launching the
   installer detached. Both fix real hangs; the design doc says why.
