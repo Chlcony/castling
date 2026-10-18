@@ -1,4 +1,4 @@
-From 72d3891a3c0b221c73729e0c52585a9028b0aff9 Mon Sep 17 00:00:00 2001
+From 1468da5a06e21b5715854c997ca7e32427571518 Mon Sep 17 00:00:00 2001
 From: Chlcony <72945153+Chlcony@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 23:40:48 +0300
 Subject: [PATCH 2/2] feat(update): build Castling updates from the update
@@ -6,17 +6,17 @@ Subject: [PATCH 2/2] feat(update): build Castling updates from the update
 
 Vorssaint's banner offers only versions Castling supports, and its Update button rebuilds the patched app through Castling's installer instead of installing the official DMG.
 ---
- .../Services/Update/CastlingUpdates.swift     | 213 ++++++++++++++++++
+ .../Services/Update/CastlingUpdates.swift     | 235 ++++++++++++++++++
  .../Services/Update/UpdateService.swift       |  10 +-
- 2 files changed, 222 insertions(+), 1 deletion(-)
+ 2 files changed, 244 insertions(+), 1 deletion(-)
  create mode 100644 Sources/Vorssaint/Services/Update/CastlingUpdates.swift
 
 diff --git a/Sources/Vorssaint/Services/Update/CastlingUpdates.swift b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
 new file mode 100644
-index 00000000..e31bb9fa
+index 00000000..eaf6768d
 --- /dev/null
 +++ b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,235 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -101,8 +101,8 @@ index 00000000..e31bb9fa
 +
 +    /// Starts Castling's installer for `version` in the background. It
 +    /// builds the patched app, replaces this one and relaunches it, so success
-+    /// needs no answer here. `onFailure` runs if the installer could not start
-+    /// or exits with an error while this app is still running.
++    /// needs no answer here. `onFailure` runs if the installer could not start,
++    /// or stops while this app is still running, which means it failed.
 +    static func install(version: String, onFailure: @escaping () -> Void) {
 +        let installer = (try? String(contentsOf: stateDirectory.appendingPathComponent("installer"),
 +                                     encoding: .utf8))?
@@ -113,25 +113,47 @@ index 00000000..e31bb9fa
 +        }
 +
 +        let log = stateDirectory.appendingPathComponent("update.log")
++        let pidFile = stateDirectory.appendingPathComponent("update.pid")
++        try? FileManager.default.removeItem(at: pidFile)
 +        FileManager.default.createFile(atPath: log.path, contents: nil)
-+        let process = Process()
-+        process.executableURL = URL(fileURLWithPath: installer)
-+        process.arguments = [version] + (candidate.map { ["--candidate", String($0)] } ?? [])
-+        if let handle = try? FileHandle(forWritingTo: log) {
-+            process.standardOutput = handle
-+            process.standardError = handle
-+        }
-+        process.standardInput = FileHandle.nullDevice
-+        process.terminationHandler = { finished in
-+            guard finished.terminationStatus != 0 else { return }
-+            DispatchQueue.main.async { fail(strings.installFailed, onFailure) }
-+        }
++
++        // Detached through a shell that exits at once, so this app is not the
++        // installer's ancestor: the build quits the running app with pkill,
++        // which never matches its own ancestors and would leave this one up.
++        let launcher = Process()
++        launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
++        launcher.arguments = ["-c", #""$0" "$@" </dev/null >"$CASTLING_LOG" 2>&1 & echo $! >"$CASTLING_PID""#,
++                              installer, version]
++            + (candidate.map { ["--candidate", String($0)] } ?? [])
++        var environment = ProcessInfo.processInfo.environment
++        environment["CASTLING_LOG"] = log.path
++        environment["CASTLING_PID"] = pidFile.path
++        launcher.environment = environment
 +        do {
-+            try process.run()
++            try launcher.run()
++            launcher.waitUntilExit()
 +        } catch {
 +            fail(strings.installerMissing, onFailure)
++            return
++        }
++        guard let text = try? String(contentsOf: pidFile, encoding: .utf8),
++              let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
++            fail(strings.installerMissing, onFailure)
++            return
++        }
++
++        // Success replaces and relaunches this app, so the installer ending
++        // while this process still runs can only mean it failed.
++        watch?.invalidate()
++        watch = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { timer in
++            guard kill(pid, 0) != 0, errno == ESRCH else { return }
++            timer.invalidate()
++            watch = nil
++            fail(strings.installFailed, onFailure)
 +        }
 +    }
++
++    private static var watch: Timer?
 +
 +    private static func fail(_ message: String, _ onFailure: () -> Void) {
 +        Notifier.post(title: L10n.shared.s.updateNotifyTitle, body: message)
