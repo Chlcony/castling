@@ -1,0 +1,263 @@
+From d5fcdd148c7e8ddd27d6c79bef22b76666c46708 Mon Sep 17 00:00:00 2001
+From: Chlcony <72945153+Chlcony@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 23:40:48 +0300
+Subject: [PATCH 2/2] feat(update): build Castling updates from the update
+ banner
+
+Vorssaint's banner offers only versions Castling supports, and its Update button rebuilds the patched app through Castling's installer instead of installing the official DMG.
+---
+ .../Services/Update/CastlingUpdates.swift     | 209 ++++++++++++++++++
+ .../Services/Update/UpdateService.swift       |  10 +-
+ 2 files changed, 218 insertions(+), 1 deletion(-)
+ create mode 100644 Sources/Vorssaint/Services/Update/CastlingUpdates.swift
+
+diff --git a/Sources/Vorssaint/Services/Update/CastlingUpdates.swift b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
+new file mode 100644
+index 00000000..ad74d28d
+--- /dev/null
++++ b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (C) 2026 Chlcony
++
++import AppKit
++
++/// Makes Vorssaint's own update banner Castling's update path. A patched app
++/// must never install the official DMG, which would drop the patch, so the
++/// banner offers only versions Castling supports, and its Update button
++/// rebuilds the patched app through Castling's installer instead.
++///
++/// Which versions are supported comes from Castling's supported.json on
++/// GitHub. When it can't be read, nothing is offered: an update that would
++/// silently remove Castling is worse than one that arrives an hour later.
++enum CastlingUpdates {
++    private static let repository = "Chlcony/castling"
++    /// Set by Castling's installer to its own path.
++    private static var stateDirectory: URL {
++        FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent("Library/Application Support/castling", isDirectory: true)
++    }
++
++    /// A pull request number to test a release still under review: the
++    /// banner then reads that PR's supported.json and builds from it.
++    private static var candidate: Int? {
++        let number = UserDefaults.standard.integer(forKey: "castlingCandidate")
++        return number > 0 ? number : nil
++    }
++
++    // MARK: - Which versions to offer
++
++    /// The versions Castling supports, or nil when the list can't be read.
++    /// Blocking, so call it off the main thread, as the release check does.
++    static func supportedVersions() -> Set<String>? {
++        let ref = candidate.map { "refs/pull/\($0)/head" } ?? "main"
++        guard let url = URL(string: "https://api.github.com/repos/\(repository)/contents/supported.json?ref=\(ref)")
++        else { return nil }
++        var request = URLRequest(url: url, timeoutInterval: 15)
++        request.setValue("application/vnd.github.raw+json", forHTTPHeaderField: "Accept")
++        request.cachePolicy = .reloadIgnoringLocalCacheData
++
++        var body: Data?
++        let done = DispatchSemaphore(value: 0)
++        URLSession.shared.dataTask(with: request) { data, response, _ in
++            if (response as? HTTPURLResponse)?.statusCode == 200 { body = data }
++            done.signal()
++        }.resume()
++        done.wait()
++
++        guard let body,
++              let manifest = try? JSONDecoder().decode(Manifest.self, from: body)
++        else { return nil }
++        return Set(manifest.releases.filter { $0.status == "supported" }.map(\.version))
++    }
++
++    /// Drops every release Castling doesn't support yet.
++    static func keep(_ candidates: [UpdateServiceSupport.ReleaseCandidate],
++                     supported: Set<String>?) -> [UpdateServiceSupport.ReleaseCandidate] {
++        guard let supported else { return [] }
++        return candidates.filter {
++            supported.contains($0.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV ")))
++        }
++    }
++
++    private struct Manifest: Decodable {
++        struct Release: Decodable {
++            let version: String
++            let status: String
++        }
++        let releases: [Release]
++    }
++
++    // MARK: - Installing
++
++    /// Always true in a Castling build; a property rather than a literal so
++    /// the official install code after the hook stays reachable as far as the
++    /// compiler can tell.
++    static var replacesOfficialInstall: Bool { true }
++
++    /// Starts Castling's installer for `version` in the background. It
++    /// builds the patched app, replaces this one and relaunches it, so success
++    /// needs no answer here. `onFailure` runs if the installer could not start
++    /// or exits with an error while this app is still running.
++    static func install(version: String, onFailure: @escaping () -> Void) {
++        let installer = (try? String(contentsOf: stateDirectory.appendingPathComponent("installer"),
++                                     encoding: .utf8))?
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++        guard let installer, FileManager.default.isExecutableFile(atPath: installer) else {
++            fail(strings.installerMissing, onFailure)
++            return
++        }
++
++        let log = stateDirectory.appendingPathComponent("update.log")
++        FileManager.default.createFile(atPath: log.path, contents: nil)
++        let process = Process()
++        process.executableURL = URL(fileURLWithPath: installer)
++        process.arguments = [version] + (candidate.map { ["--candidate", String($0)] } ?? [])
++        if let handle = try? FileHandle(forWritingTo: log) {
++            process.standardOutput = handle
++            process.standardError = handle
++        }
++        process.standardInput = FileHandle.nullDevice
++        process.terminationHandler = { finished in
++            guard finished.terminationStatus != 0 else { return }
++            DispatchQueue.main.async { fail(strings.installFailed, onFailure) }
++        }
++        do {
++            try process.run()
++        } catch {
++            fail(strings.installerMissing, onFailure)
++        }
++    }
++
++    private static func fail(_ message: String, _ onFailure: () -> Void) {
++        Notifier.post(title: L10n.shared.s.updateNotifyTitle, body: message)
++        onFailure()
++    }
++
++    private static var strings: CastlingUpdateStrings {
++        CastlingUpdateStrings.forLanguage(L10n.shared.language)
++    }
++}
++
++/// Text for the two ways a Castling update can fail. Everything else the
++/// banner shows is Vorssaint's own.
++struct CastlingUpdateStrings {
++    let installerMissing: String
++    let installFailed: String
++
++    static func forLanguage(_ language: AppLanguage) -> CastlingUpdateStrings {
++        switch language {
++        case .enUS: return .enUS
++        case .ptBR: return .ptBR
++        case .tr: return .tr
++        case .ru: return .ru
++        case .uk: return .uk
++        case .es: return .es
++        case .sk: return .sk
++        case .de: return .de
++        case .fr: return .fr
++        case .it: return .it
++        case .ja: return .ja
++        case .ko: return .ko
++        case .zhHans: return .zhHans
++        case .zhTW: return .zhTW
++        case .zhHK: return .zhHK
++        }
++    }
++
++    static let enUS = CastlingUpdateStrings(
++        installerMissing: "Castling's installer wasn't found. Run install from your Castling folder once, then try again.",
++        installFailed: "The Castling update didn't finish. Your app is unchanged; details are in Application Support › castling › update.log."
++    )
++    static let ptBR = CastlingUpdateStrings(
++        installerMissing: "O instalador do Castling não foi encontrado. Execute install na pasta do Castling uma vez e tente de novo.",
++        installFailed: "A atualização do Castling não foi concluída. Seu app não foi alterado; os detalhes estão em Application Support › castling › update.log."
++    )
++    static let tr = CastlingUpdateStrings(
++        installerMissing: "Castling yükleyicisi bulunamadı. Castling klasörünüzden install komutunu bir kez çalıştırıp yeniden deneyin.",
++        installFailed: "Castling güncellemesi tamamlanmadı. Uygulamanız değişmedi; ayrıntılar Application Support › castling › update.log dosyasında."
++    )
++    static let ru = CastlingUpdateStrings(
++        installerMissing: "Установщик Castling не найден. Один раз запустите install из папки Castling и повторите попытку.",
++        installFailed: "Обновление Castling не завершилось. Приложение не изменено; подробности в Application Support › castling › update.log."
++    )
++    static let uk = CastlingUpdateStrings(
++        installerMissing: "Інсталятор Castling не знайдено. Один раз запустіть install із теки Castling і спробуйте ще раз.",
++        installFailed: "Оновлення Castling не завершилося. Застосунок не змінено; подробиці в Application Support › castling › update.log."
++    )
++    static let es = CastlingUpdateStrings(
++        installerMissing: "No se encontró el instalador de Castling. Ejecuta install una vez desde tu carpeta de Castling y vuelve a intentarlo.",
++        installFailed: "La actualización de Castling no terminó. Tu app no cambió; los detalles están en Application Support › castling › update.log."
++    )
++    static let sk = CastlingUpdateStrings(
++        installerMissing: "Inštalátor Castlingu sa nenašiel. Raz spustite install z priečinka Castling a skúste to znova.",
++        installFailed: "Aktualizácia Castlingu sa nedokončila. Aplikácia sa nezmenila; podrobnosti sú v Application Support › castling › update.log."
++    )
++    static let de = CastlingUpdateStrings(
++        installerMissing: "Das Castling-Installationsprogramm wurde nicht gefunden. Führe install einmal in deinem Castling-Ordner aus und versuche es erneut.",
++        installFailed: "Das Castling-Update wurde nicht abgeschlossen. Deine App ist unverändert; Details stehen in Application Support › castling › update.log."
++    )
++    static let fr = CastlingUpdateStrings(
++        installerMissing: "Le programme d’installation de Castling est introuvable. Lancez install une fois depuis votre dossier Castling, puis réessayez.",
++        installFailed: "La mise à jour de Castling n’a pas abouti. Votre app n’a pas changé ; les détails sont dans Application Support › castling › update.log."
++    )
++    static let it = CastlingUpdateStrings(
++        installerMissing: "Il programma di installazione di Castling non è stato trovato. Esegui install una volta dalla cartella di Castling e riprova.",
++        installFailed: "L’aggiornamento di Castling non è stato completato. L’app non è cambiata; i dettagli sono in Application Support › castling › update.log."
++    )
++    static let ja = CastlingUpdateStrings(
++        installerMissing: "Castling のインストーラが見つかりません。Castling フォルダで install を一度実行してから、もう一度お試しください。",
++        installFailed: "Castling のアップデートが完了しませんでした。アプリは変更されていません。詳細は Application Support › castling › update.log にあります。"
++    )
++    static let ko = CastlingUpdateStrings(
++        installerMissing: "Castling 설치 프로그램을 찾을 수 없습니다. Castling 폴더에서 install을 한 번 실행한 후 다시 시도하세요.",
++        installFailed: "Castling 업데이트를 완료하지 못했습니다. 앱은 변경되지 않았으며, 자세한 내용은 Application Support › castling › update.log에 있습니다."
++    )
++    static let zhHans = CastlingUpdateStrings(
++        installerMissing: "找不到 Castling 安装程序。请在 Castling 文件夹中运行一次 install，然后重试。",
++        installFailed: "Castling 更新未完成。你的应用没有变化；详细信息见 Application Support › castling › update.log。"
++    )
++    static let zhTW = CastlingUpdateStrings(
++        installerMissing: "找不到 Castling 安裝程式。請在 Castling 資料夾中執行一次 install，然後再試一次。",
++        installFailed: "Castling 更新未完成。你的 App 沒有變更；詳細資訊請見 Application Support › castling › update.log。"
++    )
++    static let zhHK = CastlingUpdateStrings(
++        installerMissing: "找不到 Castling 安裝程式。請在 Castling 資料夾中執行一次 install，然後再試一次。",
++        installFailed: "Castling 更新未完成。你的 App 沒有變更；詳細資料請參閱 Application Support › castling › update.log。"
++    )
++}
+diff --git a/Sources/Vorssaint/Services/Update/UpdateService.swift b/Sources/Vorssaint/Services/Update/UpdateService.swift
+index 270ab77d..dab9d8df 100644
+--- a/Sources/Vorssaint/Services/Update/UpdateService.swift
++++ b/Sources/Vorssaint/Services/Update/UpdateService.swift
+@@ -129,6 +129,7 @@ final class UpdateService: ObservableObject {
+ 
+         URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+             guard let self else { return }
++            let castlingSupported = CastlingUpdates.supportedVersions()  // Castling: off the main thread
+             DispatchQueue.main.async {
+                 self.lastChecked = Date()
+                 guard let data, error == nil else {
+@@ -165,7 +166,7 @@ final class UpdateService: ObservableObject {
+                 }
+ 
+                 if let chosen = UpdateServiceSupport.selectUpdate(
+-                    from: candidates,
++                    from: CastlingUpdates.keep(candidates, supported: castlingSupported),
+                     currentVersion: AppInfo.version,
+                     includeBetas: self.includeBetaUpdates
+                 ) {
+@@ -207,6 +208,13 @@ final class UpdateService: ObservableObject {
+ 
+     func downloadAndInstall() {
+         if AppInfo.isDeveloperBuild { return }  // never replace the local dev build over itself
++        // Castling: rebuild the patched app instead of installing the official one.
++        if CastlingUpdates.replacesOfficialInstall {
++            guard case let .available(version) = state else { return }
++            state = .installing
++            CastlingUpdates.install(version: version) { [weak self] in self?.state = .available(version: version) }
++            return
++        }
+         guard let downloadURL else { return }
+         // Pre-flight BEFORE spending the download: a translocated app or one
+         // running from a read-only volume (the mounted DMG) can never be
