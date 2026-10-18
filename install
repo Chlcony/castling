@@ -173,7 +173,7 @@ restore() {
         say "Restoring your previous Vorssaint…" >&2
         rm -rf "$app"
         ditto "$backup" "$app"
-        open -b "$bundle_id" 2>/dev/null || true
+        open "$app" 2>/dev/null || true
     fi
 }
 
@@ -191,25 +191,7 @@ if ! "$app/Contents/MacOS/Vorssaint" --selftest 2>/dev/null | grep -q "SELFTEST 
 fi
 say "✓ Installed and self-tested"
 
-# --- 8. Vorssaint's own update check -----------------------------------------
-
-checks="$(defaults read "$bundle_id" autoCheckUpdates 2>/dev/null || echo 1)"
-if [[ "$checks" != 0 ]]; then
-    say ""
-    say "Vorssaint checks for official updates on its own. Accepting one replaces"
-    say "this patched app with the official build, and the Castling features go"
-    say "away (nothing breaks; run ./install again to get them back)."
-    say "Turning the check off is recommended. Updates then come from Castling:"
-    say "  cd castling && git pull && ./install"
-    if ask_yes "Turn off Vorssaint's own update check?"; then
-        defaults write "$bundle_id" autoCheckUpdates -bool false
-        say "Turned off. You can turn it back on in Vorssaint's settings."
-    else
-        say "Left on. If Vorssaint offers an update, decline it until Castling supports it."
-    fi
-fi
-
-# --- 9. permissions ----------------------------------------------------------
+# --- 8. permissions ----------------------------------------------------------
 
 if (( was_official )); then
     say ""
@@ -236,7 +218,10 @@ mkdir -p "$state"
 printf '{ "version": "%s", "patch": "%s", "installed": "%s" }\n' \
     "$target" "${patch:-candidate-$candidate}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$state/installed.json"
 
-open -b "$bundle_id"
+open "$app"
 say ""
 say "✓ Vorssaint $target with Castling is running."
-say "  To go back to the official app: ./uninstall"
+say ""
+say "If Vorssaint offers an update before Castling supports it, installing it"
+say "brings back the official app without Castling. Run ./install again once"
+say "Castling supports that version. To go back to the official app: ./uninstall"

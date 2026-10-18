@@ -19,10 +19,11 @@ display, and starring a display never changes the arrangement.
 Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE.md).
 
 > [!IMPORTANT]
-> **With Castling installed, you hear about a new Vorssaint release only once
-> Castling supports it.** That is usually soon after the release, but it can
-> take days when the patch needs porting. If you need an upstream fix right away, run
-> `./uninstall` to go back to the official app.
+> **Vorssaint keeps offering its own updates.** Installing one before Castling
+> supports that version brings back the official app, without Castling's
+> features; your settings and saved arrangements stay. Run `./install` again
+> once the version is supported: usually soon after its release, but it can
+> take days when the patch needs porting.
 
 ## Compatibility
 
@@ -55,9 +56,7 @@ supported one if you have none), or a specific one with `./install 3.4.1`. It:
 3. backs up your current app to `~/Library/Application Support/castling/backups/`
    and puts it back if anything fails;
 4. keeps all your Vorssaint settings;
-5. asks whether to turn off Vorssaint's own update check, which would otherwise
-   offer to replace the patched app with the official one;
-6. explains the one permissions step below.
+5. explains the one permissions step below.
 
 It never uses `sudo`. A build takes a few minutes.
 

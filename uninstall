@@ -85,11 +85,6 @@ say "✓ Installed the official Vorssaint $version"
 
 # --- settings and permissions ------------------------------------------------
 
-if [[ "$(defaults read "$bundle_id" autoCheckUpdates 2>/dev/null || echo 1)" == 0 ]]; then
-    if ask_yes "Turn Vorssaint's own update check back on?"; then
-        defaults write "$bundle_id" autoCheckUpdates -bool true
-    fi
-fi
 
 say ""
 say "macOS treats the official build as a different app from the one you built,"
@@ -101,7 +96,7 @@ if ask_yes "Clear the old Accessibility and Screen Recording grants now?"; then
 fi
 
 rm -f "$state/installed.json"
-open -b "$bundle_id"
+open "$app"
 say ""
 say "✓ The official Vorssaint $version is running. Your settings are unchanged;"
 say "  saved arrangements stay stored, and come back if you run ./install again."
