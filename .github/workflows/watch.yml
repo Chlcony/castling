@@ -233,7 +233,7 @@ jobs:
 
           **Install the candidate on your Mac:**
           \`\`\`
-          cd castling && git pull && ./install $VERSION --candidate $NUMBER
+          ./install --candidate $NUMBER      # from your Castling folder
           \`\`\`
 
           **Check by eye** (tests can't see the panel):
