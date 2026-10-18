@@ -1,4 +1,4 @@
-From d5fcdd148c7e8ddd27d6c79bef22b76666c46708 Mon Sep 17 00:00:00 2001
+From 72d3891a3c0b221c73729e0c52585a9028b0aff9 Mon Sep 17 00:00:00 2001
 From: Chlcony <72945153+Chlcony@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 23:40:48 +0300
 Subject: [PATCH 2/2] feat(update): build Castling updates from the update
@@ -6,17 +6,17 @@ Subject: [PATCH 2/2] feat(update): build Castling updates from the update
 
 Vorssaint's banner offers only versions Castling supports, and its Update button rebuilds the patched app through Castling's installer instead of installing the official DMG.
 ---
- .../Services/Update/CastlingUpdates.swift     | 209 ++++++++++++++++++
+ .../Services/Update/CastlingUpdates.swift     | 213 ++++++++++++++++++
  .../Services/Update/UpdateService.swift       |  10 +-
- 2 files changed, 218 insertions(+), 1 deletion(-)
+ 2 files changed, 222 insertions(+), 1 deletion(-)
  create mode 100644 Sources/Vorssaint/Services/Update/CastlingUpdates.swift
 
 diff --git a/Sources/Vorssaint/Services/Update/CastlingUpdates.swift b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
 new file mode 100644
-index 00000000..ad74d28d
+index 00000000..e31bb9fa
 --- /dev/null
 +++ b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,213 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -32,6 +32,10 @@ index 00000000..ad74d28d
 +/// silently remove Castling is worse than one that arrives an hour later.
 +enum CastlingUpdates {
 +    private static let repository = "Chlcony/castling"
++    /// Its own session, never `URLSession.shared`: the release check calls in
++    /// from a shared-session callback and waits, and a request on that same
++    /// session would need the very queue that wait is holding.
++    private static let session = URLSession(configuration: .ephemeral)
 +    /// Set by Castling's installer to its own path.
 +    private static var stateDirectory: URL {
 +        FileManager.default.homeDirectoryForCurrentUser
@@ -59,7 +63,7 @@ index 00000000..ad74d28d
 +
 +        var body: Data?
 +        let done = DispatchSemaphore(value: 0)
-+        URLSession.shared.dataTask(with: request) { data, response, _ in
++        session.dataTask(with: request) { data, response, _ in
 +            if (response as? HTTPURLResponse)?.statusCode == 200 { body = data }
 +            done.signal()
 +        }.resume()
