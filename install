@@ -4,7 +4,7 @@
 #
 # Builds Vorssaint with the Castling patch on this Mac and installs it.
 #
-#   ./install                  the version you have now, or the newest supported
+#   ./install                  the version you have now, or the newest stable one
 #   ./install 3.4.1            a specific Vorssaint version
 #   ./install 3.4.2 --candidate 12   a version still under review, from pull request 12
 #   ./install --restore        put back one of the saved backups, in seconds
@@ -193,7 +193,9 @@ installed=""
 
 if [[ -z "$target" ]]; then
     if [[ -n "$installed" ]]; then target="$installed"
-    else target="$(supported_list | tail -1)"
+    # A fresh install gets the newest stable release; betas are opt-in,
+    # through Vorssaint's own beta setting or by naming one.
+    else target="$(supported_list | grep -v -- - | tail -1 || true)"
     fi
 fi
 [[ -n "$target" ]] || fail "No supported Vorssaint version is listed yet."
@@ -214,7 +216,7 @@ if [[ -z "$entry" || " $allowed " != *" $status "* ]]; then
         say "Castling doesn't support Vorssaint $target."
     fi
     say "Your current app is unchanged."
-    newest="$(supported_list | tail -1)"
+    newest="$(supported_list | grep -v -- - | tail -1 || true)"
     if [[ -n "$newest" ]]; then
         say ""
         say "Supported versions: $(supported_list | paste -sd ' ' -)"

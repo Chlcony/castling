@@ -34,7 +34,12 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 <!-- compat:end -->
 
 Any other version: `./install` tells you it isn't supported and changes
-nothing. Vorssaint betas aren't supported.
+nothing.
+
+**Betas** are opt-in. Turn on *Receive beta updates* in Vorssaint's settings
+and its banner offers a beta once Castling supports it; otherwise you stay on
+stable releases. To install a beta from Terminal, name it, e.g.
+`~/castling/install 3.4.2-beta.1`.
 
 ## Install
 
