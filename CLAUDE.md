@@ -81,6 +81,24 @@ service instead of editing `Core/Localization.swift`, to keep the footprint.
   save, apply and delete an arrangement; starring makes that display main and
   keeps the highlight; applying an arrangement never changes the main display.
 
+## The update hook
+
+`02-update-hook.patch` reroutes Vorssaint's update banner through Castling;
+`docs/design.md` explains it. When porting it:
+
+- It may only touch `Services/Update/UpdateService.swift`: the filter in
+  `check(manual:)` and the redirect at the top of `downloadAndInstall()`.
+  Everything else goes in `CastlingUpdates.swift`, and logic that needs no
+  AppKit in `CastlingUpdateSupport.swift`, which `tests/` compiles. Never edit
+  `UpdateServiceSupport.swift`, which upstream compiles into its test build.
+- Keep `CastlingUpdates` on its own `URLSession`, and keep launching the
+  installer detached. Both fix real hangs; the design doc says why.
+- If upstream reworks its updater so the two hooks no longer fit, rework the
+  hook to fit the new code: the same behaviour (offer only supported
+  versions, nothing when the list can't be read; Update runs Castling's
+  installer), still only in `UpdateService.swift`. If it can't fit there,
+  stop and explain in the PR; the owner decides.
+
 ## Porting to a new upstream release
 
 1. Clone upstream at the release tag; apply the latest patch set with `git am -3`.
