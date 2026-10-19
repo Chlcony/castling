@@ -18,7 +18,7 @@ display, and starring a display never changes the arrangement.
 
 <p align="center">
   <img src="docs/images/menu-bar-panel.png" width="340" alt="Vorssaint's Displays section in the menu bar panel with Castling: a strip of saved arrangement thumbnails, a filled star on the main display and a hollow star on a Sidecar display">
-  <img src="docs/images/dynamic-island.png" width="475" alt="The same Displays section inside Vorssaint's Dynamic Island, in dark appearance">
+  <img src="docs/images/dynamic-island.png" width="472" alt="The same Displays section inside Vorssaint's Dynamic Island, in dark appearance">
 </p>
 
 Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE.md).
