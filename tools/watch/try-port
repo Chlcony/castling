@@ -72,18 +72,18 @@ fi
 fail() { echo "✗ $1" >&2; out "result=failed"; out "failed_check=$1"; exit 4; }
 
 step "Checking the footprint"
-git -C "$work/patched" diff --stat "v$version" | tee "$logs/footprint.txt"
+git -C "$work/patched" diff --stat --no-renames "v$version" | tee "$logs/footprint.txt"
 allowed='^(Sources/Vorssaint/UI/MenuPanel/BrightnessSection\.swift|Sources/Vorssaint/Services/Update/UpdateService\.swift)$'
 while read -r file; do
     git -C "$work/patched" cat-file -e "v$version:$file" 2>/dev/null || continue  # new file: fine
     [[ "$file" =~ $allowed ]] || fail "the patch edits upstream file $file"
-done < <(git -C "$work/patched" diff --name-only "v$version")
+done < <(git -C "$work/patched" diff --name-only --no-renames "v$version")
 
 step "Building"
 (cd "$work/patched" && ./build.sh) >"$logs/build.log" 2>&1 || { tail -40 "$logs/build.log"; fail "build"; }
 # Only the patch's own files count: a newer compiler on CI can warn about
 # upstream's code, which is upstream's to fix.
-patch_files="$(git -C "$work/patched" diff --name-only "v$version" | sed 's/[.]/[.]/g' | paste -sd'|' -)"
+patch_files="$(git -C "$work/patched" diff --name-only --no-renames "v$version" | sed 's/[.]/[.]/g' | paste -sd'|' -)"
 ours="$(grep -E "^($patch_files):[0-9]+:[0-9]+: warning:" "$logs/build.log" | sort -u || true)"
 if [[ -n "$ours" ]]; then
     echo "$ours" | head -20
@@ -93,8 +93,13 @@ others="$(grep -cE "^[^ ]+\.swift:[0-9]+:[0-9]+: warning:" "$logs/build.log" || 
 (( others == 0 )) || echo "($others warnings in upstream's own files, ignored)"
 
 step "Patch tests"
-"$root/tests/run" "$work/patched" | tee "$logs/patch-tests.log" | tail -1
-[[ "${PIPESTATUS[0]}" == 0 ]] || fail "patch tests"
+# Not a pipeline: with pipefail a failing test run would end the script here,
+# before fail() could record which check failed.
+if ! "$root/tests/run" "$work/patched" >"$logs/patch-tests.log" 2>&1; then
+    tail -20 "$logs/patch-tests.log"
+    fail "patch tests"
+fi
+tail -1 "$logs/patch-tests.log"
 
 step "Self-test"
 "$work/patched/build/stage/Vorssaint.app/Contents/MacOS/Vorssaint" --selftest >"$logs/selftest.log" 2>&1 || true
@@ -104,12 +109,18 @@ echo "SELFTEST OK"
 # Upstream's suite has failures of its own (some depend on the machine's
 # displays), so a failure only counts against the patch if a clean run of the
 # same tag on the same machine passes that check.
-failures() { grep -v sandbox_extension "$1" | sed -n '/^TESTS FAILED/,/^[^ ]/p' | grep '^  - ' | sort -u; }
+failures() { grep -v sandbox_extension "$1" | sed -n '/^TESTS FAILED/,/^[^ ]/p' | grep '^  - ' | sort -u || true; }
 
 step "Upstream's test suite"
 if (cd "$work/patched" && ./build.sh --test) >"$logs/upstream-tests.log" 2>&1; then
     echo "TESTS OK"
 else
+    # A failure that lists no failing checks (a crash, a compile error, a
+    # shell test) can't be compared, so it counts against the patch.
+    if [[ -z "$(failures "$logs/upstream-tests.log")" ]]; then
+        tail -30 "$logs/upstream-tests.log"
+        fail "upstream tests (failed without listing checks)"
+    fi
     step "Upstream's suite failed; running it on clean v$version to compare"
     git clone --quiet --depth 1 --branch "v$version" "$upstream" "$work/clean" 2>/dev/null
     (cd "$work/clean" && ./build.sh --test) >"$logs/clean-tests.log" 2>&1 || true

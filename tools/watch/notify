@@ -21,8 +21,15 @@ label="release"
 gh label create "$label" --color 1f6feb --description "One thread per Vorssaint release" \
     >/dev/null 2>&1 || true
 
-issue="$(gh issue list --state open --label "$label" --search "\"$title\" in:title" \
-    --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+# GitHub's issue lists lag new and closed issues by a few seconds, so a
+# message sent right after the thread was opened might not find it. Look
+# twice before opening a second thread.
+find_thread() {
+    gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=$label&per_page=100" \
+        --jq ".[] | select(.title == \"$title\" and (.pull_request | not)) | .number" | head -1
+}
+issue="$(find_thread)"
+[[ -n "$issue" ]] || { sleep 10; issue="$(find_thread)"; }
 if [[ -z "$issue" ]]; then
     url="$(gh issue create --title "$title" --label "$label" --body-file "$body")"
     issue="${url##*/}"
