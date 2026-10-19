@@ -24,11 +24,13 @@ jobs:
   tag:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - name: Check out Castling
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - run: |
+      - name: Tag newly supported versions
+        run: |
           python3 -c 'import json; [print(r["version"], r["patch"]) for r in json.load(open("supported.json"))["releases"] if r["status"] == "supported" and r["patch"]]' |
           while read -r version patch; do
             git rev-parse -q --verify "refs/tags/$patch" >/dev/null && continue

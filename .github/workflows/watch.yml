@@ -53,9 +53,11 @@ jobs:
       prerelease: ${{ steps.find.outputs.prerelease }}
       dry_run: ${{ steps.find.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Check out Castling
+        uses: actions/checkout@v5
 
-      - id: find
+      - name: Look for a new Vorssaint release
+        id: find
         env:
           TRACK_BETAS: ${{ vars.TRACK_BETAS || 'false' }}
           TAG: ${{ inputs.tag }}
@@ -115,11 +117,14 @@ jobs:
       BRANCH: ${{ inputs.test_ai && inputs.tag && format('castling/test-ai-{0}', github.run_id) || format('castling/port-{0}', needs.detect.outputs.version) }}
       TEST_AI: ${{ inputs.test_ai && inputs.tag && 'true' || 'false' }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Check out Castling
+        uses: actions/checkout@v5
 
-      - run: echo "CASTLING_LOGS=$RUNNER_TEMP/logs" >>"$GITHUB_ENV"
+      - name: Keep logs outside the checkout
+        run: echo "CASTLING_LOGS=$RUNNER_TEMP/logs" >>"$GITHUB_ENV"
 
-      - id: try
+      - name: Try the current patch on this release
+        id: try
         continue-on-error: true
         run: |
           if [[ "${{ needs.detect.outputs.dry_run }}" == true ]]; then
@@ -128,7 +133,8 @@ jobs:
             tools/watch/try-port "$VERSION" --export
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Save the logs
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: logs-${{ env.VERSION }}
@@ -198,11 +204,14 @@ jobs:
             1. Clone Vorssaint at tag v${{ env.VERSION }}, apply the patch with git am -3,
                and resolve within the minimal footprint and Vorssaint's conventions.
             2. Run the full verification in CLAUDE.md. `tools/watch/try-port` runs it.
-            3. Write the changed patch as a new set, patches/cl-<today's date, YYYY-MM-DD>/,
-               with git format-patch, renaming each file to CLAUDE.md's scheme
-               (01-displays.patch, ...). Verify it with
-               `tools/watch/try-port ${{ env.VERSION }} --patches cl-<that date> --export`,
-               which also adds the version to supported.json and updates the README.
+            3. If the patch had to change, write it as a new set,
+               patches/cl-<today's date, YYYY-MM-DD>/, with git format-patch, renaming
+               each file to CLAUDE.md's scheme (01-displays.patch, ...), and verify it
+               with `tools/watch/try-port ${{ env.VERSION }} --patches cl-<that date> --export`.
+               If it didn't, reuse the current set: `tools/watch/try-port ${{ env.VERSION }} --export`.
+               Either way that adds the version to supported.json and updates the README.
+               In the PR, report Vorssaint's own test suite exactly as try-port does,
+               including failures it shares with a clean run of the same tag.
             4. Commit on branch ${{ env.BRANCH }}, push, and open a pull request against
                main titled "feat: support Vorssaint ${{ env.VERSION }}". Describe what
                upstream changed, what you changed and why, and list the visual checks.
