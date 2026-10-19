@@ -93,10 +93,11 @@ service instead of editing `Core/Localization.swift`, to keep the footprint.
   `UpdateServiceSupport.swift`, which upstream compiles into its test build.
 - Keep `CastlingUpdates` on its own `URLSession`, and keep launching the
   installer detached. Both fix real hangs; the design doc says why.
-- If upstream reworks its updater so the two hooks no longer fit, ship
-  `01-displays.patch` alone for that version and say so in the PR, rather
-  than widening the footprint. Users then update through Terminal until the
-  hook is ported.
+- If upstream reworks its updater so the two hooks no longer fit, rework the
+  hook to fit the new code: the same behaviour (offer only supported
+  versions, nothing when the list can't be read; Update runs Castling's
+  installer), still only in `UpdateService.swift`. If it can't fit there,
+  stop and explain in the PR; the owner decides.
 
 ## Porting to a new upstream release
 
