@@ -1,4 +1,4 @@
-From d9a8c6fbc7703c440b8010f45b13e0dc3d91c99b Mon Sep 17 00:00:00 2001
+From 7ee4e8e27b4a7682b06ac2019e59ecd0458a0677 Mon Sep 17 00:00:00 2001
 From: Chlcony <72945153+Chlcony@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 23:40:48 +0300
 Subject: [PATCH] feat(update): build Castling updates from the update
@@ -7,9 +7,9 @@ Subject: [PATCH] feat(update): build Castling updates from the update
 Vorssaint's banner offers only versions Castling supports, and its Update button rebuilds the patched app through Castling's installer instead of installing the official DMG.
 ---
  .../Update/CastlingUpdateSupport.swift        |  36 +++
- .../Services/Update/CastlingUpdates.swift     | 240 ++++++++++++++++++
+ .../Services/Update/CastlingUpdates.swift     | 238 ++++++++++++++++++
  .../Services/Update/UpdateService.swift       |  18 +-
- 3 files changed, 293 insertions(+), 1 deletion(-)
+ 3 files changed, 291 insertions(+), 1 deletion(-)
  create mode 100644 Sources/Vorssaint/Services/Update/CastlingUpdateSupport.swift
  create mode 100644 Sources/Vorssaint/Services/Update/CastlingUpdates.swift
 
@@ -57,10 +57,10 @@ index 00000000..cc749a9a
 +}
 diff --git a/Sources/Vorssaint/Services/Update/CastlingUpdates.swift b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
 new file mode 100644
-index 00000000..ed564ebf
+index 00000000..18b1dddf
 --- /dev/null
 +++ b/Sources/Vorssaint/Services/Update/CastlingUpdates.swift
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,238 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Copyright (C) 2026 Chlcony
 +
@@ -95,25 +95,42 @@ index 00000000..ed564ebf
 +
 +    // MARK: - Which versions to offer
 +
-+    /// The versions Castling supports, or nil when the list can't be read.
-+    /// Blocking, so call it off the main thread, as the release check does.
-+    static func supportedVersions() -> Set<String>? {
++    /// The versions Castling supports, or why the list couldn't be read, in
++    /// the words Vorssaint's own check uses: the system's error text, or "-"
++    /// when an answer arrived but wasn't a list. Blocking, so call it off the
++    /// main thread, as the release check does.
++    static func supportedVersions() -> Result<Set<String>, ListFailure> {
 +        let ref = candidate.map { "refs/pull/\($0)/head" } ?? "main"
 +        guard let url = URL(string: "https://api.github.com/repos/\(repository)/contents/supported.json?ref=\(ref)")
-+        else { return nil }
++        else { return .failure(ListFailure(message: "-")) }
 +        var request = URLRequest(url: url, timeoutInterval: 15)
 +        request.setValue("application/vnd.github.raw+json", forHTTPHeaderField: "Accept")
 +        request.cachePolicy = .reloadIgnoringLocalCacheData
 +
 +        var body: Data?
++        var failure: Error?
 +        let done = DispatchSemaphore(value: 0)
-+        session.dataTask(with: request) { data, response, _ in
++        session.dataTask(with: request) { data, response, error in
 +            if (response as? HTTPURLResponse)?.statusCode == 200 { body = data }
++            failure = error
 +            done.signal()
 +        }.resume()
 +        done.wait()
 +
-+        return body.flatMap(CastlingUpdateSupport.supportedVersions(fromManifest:))
++        if let failure { return .failure(ListFailure(message: failure.localizedDescription)) }
++        guard let versions = body.flatMap(CastlingUpdateSupport.supportedVersions(fromManifest:))
++        else { return .failure(ListFailure(message: "-")) }
++        return .success(versions)
++    }
++
++    struct ListFailure: Error {
++        let message: String
++    }
++
++    /// What the release check shows when the list couldn't be read.
++    static func failureMessage(_ result: Result<Set<String>, ListFailure>?) -> String {
++        if case let .failure(failure)? = result { return failure.message }
++        return "-"
 +    }
 +
 +    /// Drops every release Castling doesn't support yet.
@@ -185,9 +202,6 @@ index 00000000..ed564ebf
 +
 +    private static var watch: Timer?
 +
-+    /// Why a release check failed when Castling's version list couldn't be read.
-+    static var listUnavailable: String { strings.listUnavailable }
-+
 +    private static func fail(_ message: String, _ onFailure: () -> Void) {
 +        Notifier.post(title: L10n.shared.s.updateNotifyTitle, body: message)
 +        onFailure()
@@ -203,7 +217,6 @@ index 00000000..ed564ebf
 +struct CastlingUpdateStrings {
 +    let installerMissing: String
 +    let installFailed: String
-+    let listUnavailable: String
 +
 +    static func forLanguage(_ language: AppLanguage) -> CastlingUpdateStrings {
 +        switch language {
@@ -227,82 +240,67 @@ index 00000000..ed564ebf
 +
 +    static let enUS = CastlingUpdateStrings(
 +        installerMissing: "Castling's installer wasn't found. Run install from your Castling folder once, then try again.",
-+        installFailed: "The Castling update didn't finish. Your app is unchanged; details are in Application Support › castling › update.log.",
-+        listUnavailable: "Couldn't read which versions Castling supports. Check your connection and try again."
++        installFailed: "The Castling update didn't finish. Your app is unchanged; details are in Application Support › castling › update.log."
 +    )
 +    static let ptBR = CastlingUpdateStrings(
 +        installerMissing: "O instalador do Castling não foi encontrado. Execute install na pasta do Castling uma vez e tente de novo.",
-+        installFailed: "A atualização do Castling não foi concluída. Seu app não foi alterado; os detalhes estão em Application Support › castling › update.log.",
-+        listUnavailable: "Não foi possível ler quais versões o Castling suporta. Verifique a conexão e tente de novo."
++        installFailed: "A atualização do Castling não foi concluída. Seu app não foi alterado; os detalhes estão em Application Support › castling › update.log."
 +    )
 +    static let tr = CastlingUpdateStrings(
 +        installerMissing: "Castling yükleyicisi bulunamadı. Castling klasörünüzden install komutunu bir kez çalıştırıp yeniden deneyin.",
-+        installFailed: "Castling güncellemesi tamamlanmadı. Uygulamanız değişmedi; ayrıntılar Application Support › castling › update.log dosyasında.",
-+        listUnavailable: "Castling'in desteklediği sürümler okunamadı. Bağlantınızı kontrol edip yeniden deneyin."
++        installFailed: "Castling güncellemesi tamamlanmadı. Uygulamanız değişmedi; ayrıntılar Application Support › castling › update.log dosyasında."
 +    )
 +    static let ru = CastlingUpdateStrings(
 +        installerMissing: "Установщик Castling не найден. Один раз запустите install из папки Castling и повторите попытку.",
-+        installFailed: "Обновление Castling не завершилось. Приложение не изменено; подробности в Application Support › castling › update.log.",
-+        listUnavailable: "Не удалось узнать, какие версии поддерживает Castling. Проверьте подключение и повторите попытку."
++        installFailed: "Обновление Castling не завершилось. Приложение не изменено; подробности в Application Support › castling › update.log."
 +    )
 +    static let uk = CastlingUpdateStrings(
 +        installerMissing: "Інсталятор Castling не знайдено. Один раз запустіть install із теки Castling і спробуйте ще раз.",
-+        installFailed: "Оновлення Castling не завершилося. Застосунок не змінено; подробиці в Application Support › castling › update.log.",
-+        listUnavailable: "Не вдалося дізнатися, які версії підтримує Castling. Перевірте з’єднання і спробуйте ще раз."
++        installFailed: "Оновлення Castling не завершилося. Застосунок не змінено; подробиці в Application Support › castling › update.log."
 +    )
 +    static let es = CastlingUpdateStrings(
 +        installerMissing: "No se encontró el instalador de Castling. Ejecuta install una vez desde tu carpeta de Castling y vuelve a intentarlo.",
-+        installFailed: "La actualización de Castling no terminó. Tu app no cambió; los detalles están en Application Support › castling › update.log.",
-+        listUnavailable: "No se pudo leer qué versiones admite Castling. Revisa tu conexión y vuelve a intentarlo."
++        installFailed: "La actualización de Castling no terminó. Tu app no cambió; los detalles están en Application Support › castling › update.log."
 +    )
 +    static let sk = CastlingUpdateStrings(
 +        installerMissing: "Inštalátor Castlingu sa nenašiel. Raz spustite install z priečinka Castling a skúste to znova.",
-+        installFailed: "Aktualizácia Castlingu sa nedokončila. Aplikácia sa nezmenila; podrobnosti sú v Application Support › castling › update.log.",
-+        listUnavailable: "Nepodarilo sa zistiť, ktoré verzie Castling podporuje. Skontrolujte pripojenie a skúste to znova."
++        installFailed: "Aktualizácia Castlingu sa nedokončila. Aplikácia sa nezmenila; podrobnosti sú v Application Support › castling › update.log."
 +    )
 +    static let de = CastlingUpdateStrings(
 +        installerMissing: "Das Castling-Installationsprogramm wurde nicht gefunden. Führe install einmal in deinem Castling-Ordner aus und versuche es erneut.",
-+        installFailed: "Das Castling-Update wurde nicht abgeschlossen. Deine App ist unverändert; Details stehen in Application Support › castling › update.log.",
-+        listUnavailable: "Es ließ sich nicht lesen, welche Versionen Castling unterstützt. Prüfe deine Verbindung und versuche es erneut."
++        installFailed: "Das Castling-Update wurde nicht abgeschlossen. Deine App ist unverändert; Details stehen in Application Support › castling › update.log."
 +    )
 +    static let fr = CastlingUpdateStrings(
 +        installerMissing: "Le programme d’installation de Castling est introuvable. Lancez install une fois depuis votre dossier Castling, puis réessayez.",
-+        installFailed: "La mise à jour de Castling n’a pas abouti. Votre app n’a pas changé ; les détails sont dans Application Support › castling › update.log.",
-+        listUnavailable: "Impossible de savoir quelles versions Castling prend en charge. Vérifiez votre connexion et réessayez."
++        installFailed: "La mise à jour de Castling n’a pas abouti. Votre app n’a pas changé ; les détails sont dans Application Support › castling › update.log."
 +    )
 +    static let it = CastlingUpdateStrings(
 +        installerMissing: "Il programma di installazione di Castling non è stato trovato. Esegui install una volta dalla cartella di Castling e riprova.",
-+        installFailed: "L’aggiornamento di Castling non è stato completato. L’app non è cambiata; i dettagli sono in Application Support › castling › update.log.",
-+        listUnavailable: "Impossibile leggere quali versioni supporta Castling. Controlla la connessione e riprova."
++        installFailed: "L’aggiornamento di Castling non è stato completato. L’app non è cambiata; i dettagli sono in Application Support › castling › update.log."
 +    )
 +    static let ja = CastlingUpdateStrings(
 +        installerMissing: "Castling のインストーラが見つかりません。Castling フォルダで install を一度実行してから、もう一度お試しください。",
-+        installFailed: "Castling のアップデートが完了しませんでした。アプリは変更されていません。詳細は Application Support › castling › update.log にあります。",
-+        listUnavailable: "Castling が対応しているバージョンを読み込めませんでした。接続を確認して、もう一度お試しください。"
++        installFailed: "Castling のアップデートが完了しませんでした。アプリは変更されていません。詳細は Application Support › castling › update.log にあります。"
 +    )
 +    static let ko = CastlingUpdateStrings(
 +        installerMissing: "Castling 설치 프로그램을 찾을 수 없습니다. Castling 폴더에서 install을 한 번 실행한 후 다시 시도하세요.",
-+        installFailed: "Castling 업데이트를 완료하지 못했습니다. 앱은 변경되지 않았으며, 자세한 내용은 Application Support › castling › update.log에 있습니다.",
-+        listUnavailable: "Castling이 지원하는 버전을 확인할 수 없습니다. 연결 상태를 확인한 후 다시 시도하세요."
++        installFailed: "Castling 업데이트를 완료하지 못했습니다. 앱은 변경되지 않았으며, 자세한 내용은 Application Support › castling › update.log에 있습니다."
 +    )
 +    static let zhHans = CastlingUpdateStrings(
 +        installerMissing: "找不到 Castling 安装程序。请在 Castling 文件夹中运行一次 install，然后重试。",
-+        installFailed: "Castling 更新未完成。你的应用没有变化；详细信息见 Application Support › castling › update.log。",
-+        listUnavailable: "无法读取 Castling 支持的版本。请检查网络连接后重试。"
++        installFailed: "Castling 更新未完成。你的应用没有变化；详细信息见 Application Support › castling › update.log。"
 +    )
 +    static let zhTW = CastlingUpdateStrings(
 +        installerMissing: "找不到 Castling 安裝程式。請在 Castling 資料夾中執行一次 install，然後再試一次。",
-+        installFailed: "Castling 更新未完成。你的 App 沒有變更；詳細資訊請見 Application Support › castling › update.log。",
-+        listUnavailable: "無法讀取 Castling 支援的版本。請檢查網路連線後再試一次。"
++        installFailed: "Castling 更新未完成。你的 App 沒有變更；詳細資訊請見 Application Support › castling › update.log。"
 +    )
 +    static let zhHK = CastlingUpdateStrings(
 +        installerMissing: "找不到 Castling 安裝程式。請在 Castling 資料夾中執行一次 install，然後再試一次。",
-+        installFailed: "Castling 更新未完成。你的 App 沒有變更；詳細資料請參閱 Application Support › castling › update.log。",
-+        listUnavailable: "無法讀取 Castling 支援的版本。請檢查網絡連線後再試一次。"
++        installFailed: "Castling 更新未完成。你的 App 沒有變更；詳細資料請參閱 Application Support › castling › update.log。"
 +    )
 +}
 diff --git a/Sources/Vorssaint/Services/Update/UpdateService.swift b/Sources/Vorssaint/Services/Update/UpdateService.swift
-index 270ab77d..bb5db07f 100644
+index 270ab77d..2a94fbd0 100644
 --- a/Sources/Vorssaint/Services/Update/UpdateService.swift
 +++ b/Sources/Vorssaint/Services/Update/UpdateService.swift
 @@ -129,6 +129,8 @@ final class UpdateService: ObservableObject {
@@ -310,7 +308,7 @@ index 270ab77d..bb5db07f 100644
          URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
              guard let self else { return }
 +            // Castling: off the main thread, and only when the release check itself worked.
-+            let castlingSupported = data == nil ? nil : CastlingUpdates.supportedVersions()
++            let castling = data == nil ? nil : CastlingUpdates.supportedVersions()
              DispatchQueue.main.async {
                  self.lastChecked = Date()
                  guard let data, error == nil else {
@@ -319,10 +317,10 @@ index 270ab77d..bb5db07f 100644
                  }
  
 +                // Castling: without its version list nothing may be offered, and
-+                // "up to date" would be untrue, so the check counts as failed.
-+                guard castlingSupported != nil else {
++                // "up to date" would be untrue, so the check fails as above.
++                guard case let .success(castlingSupported)? = castling else {
 +                    self.availableNotes = nil
-+                    self.state = .failed(CastlingUpdates.listUnavailable)
++                    self.state = .failed(CastlingUpdates.failureMessage(castling))
 +                    return
 +                }
                  if let chosen = UpdateServiceSupport.selectUpdate(
