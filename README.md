@@ -35,7 +35,12 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 <!-- compat:end -->
 
 Any other version: `./install` tells you it isn't supported and changes
-nothing. Vorssaint betas aren't supported.
+nothing.
+
+**Betas** are opt-in. Turn on *Receive beta updates* in Vorssaint's settings
+and its banner offers a beta once Castling supports it; otherwise you stay on
+stable releases. To install a beta from Terminal, name it, e.g.
+`~/castling/install 3.4.2-beta.1`.
 
 ## Install
 
@@ -77,10 +82,19 @@ updates keep them.
 When Castling supports a new Vorssaint release, Vorssaint's own update banner
 offers it. Click **Update**: Castling rebuilds the patched app in the
 background, which takes a few minutes, and Vorssaint restarts as the new
-version. You can also update from Terminal:
+version. You can also update from Terminal, naming the version:
 
 ```sh
-~/castling/install
+~/castling/install 3.4.2
+```
+
+## Undo an update
+
+Every install backs up the app it replaces, keeping the three newest. To put
+one back, which takes seconds and needs no network:
+
+```sh
+~/castling/install --restore
 ```
 
 ## Go back to the official app
