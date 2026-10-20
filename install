@@ -8,6 +8,7 @@
 #   ./install 3.4.1            a specific Vorssaint version
 #   ./install 3.4.2 --candidate 12   a version still under review, from pull request 12
 #   ./install --restore        put back one of the saved backups, in seconds
+#   ./install --separate       build "Vorssaint (Developer)" next to your main app
 #
 # Never uses sudo. Backs up the current app first and restores it if anything
 # fails, so you are never left without a working Vorssaint.
@@ -16,6 +17,22 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 app="/Applications/Vorssaint.app"
 bundle_id="com.vorssaint.utils"
+executable="Vorssaint"
+build_flags=(--install)
+backup_kind=""
+separate=0
+
+# Vorssaint's own developer variant: its own app, bundle id and settings, so it
+# runs next to the main app and never touches it. Vorssaint switches updates
+# off in developer builds, so the update banner doesn't apply to it.
+use_developer_app() {
+    app="/Applications/Vorssaint (Developer).app"
+    bundle_id="com.vorssaint.utils.dev"
+    executable="VorssaintDeveloper"
+    build_flags=(--dev --install)
+    backup_kind="Developer-"
+    separate=1
+}
 official_team="3D485NHW29"
 upstream_url="https://github.com/vorssaint/vorssaint-utils.git"
 state="$HOME/Library/Application Support/castling"
@@ -43,10 +60,11 @@ restoring=0
 while (( $# )); do
     case "$1" in
         --candidate) candidate="${2:?--candidate needs a pull request number}"; shift ;;
+        --separate) use_developer_app ;;
         --restore)
             restoring=1
             if [[ -n "${2:-}" && "$2" != -* ]]; then restore_pick="$2"; shift; fi ;;
-        -h|--help) sed -n '5,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) fail "Unknown option $1. Run ./install --help." ;;
         *) target="$1" ;;
     esac
@@ -86,6 +104,7 @@ if (( restoring )); then
         local v kind
         v="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null || echo "?")"
         if codesign -dv "$1" 2>&1 | grep -q "TeamIdentifier=$official_team"; then kind="official"
+        elif [[ "$1" == *-Vorssaint-Developer-* || "$1" == *"(Developer).app" ]]; then kind="developer app, with Castling"
         else kind="with Castling"; fi
         printf '%s, %s' "$v" "$kind"
     }
@@ -103,13 +122,16 @@ if (( restoring )); then
     [[ "$restore_pick" =~ ^[0-9]+$ ]] && (( restore_pick >= 1 && restore_pick <= ${#backups[@]} )) \
         || fail "Pick a number from 1 to ${#backups[@]}."
     chosen="${backups[$((restore_pick - 1))]}"
+    # A backup goes back to the app it came from.
+    if [[ "$(basename "$chosen")" == *-Vorssaint-Developer-* ]]; then use_developer_app
+    else app="/Applications/Vorssaint.app"; bundle_id="com.vorssaint.utils"; backup_kind=""; fi
 
     step "Restoring $(basename "$chosen")"
     osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
     for _ in {1..50}; do pgrep -f "$app/Contents/MacOS/" >/dev/null || break; sleep 0.2; done
     pgrep -f "$app/Contents/MacOS/" >/dev/null && fail "Vorssaint is still running. Quit it and try again."
     if [[ -d "$app" ]]; then
-        ditto "$app" "$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || echo unknown).app"
+        ditto "$app" "$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-$backup_kind$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || echo unknown).app"
     fi
     rm -rf "$app"
     ditto "$chosen" "$app"
@@ -266,7 +288,7 @@ if [[ -d "$app" ]]; then
     step "Backing up your current Vorssaint"
     codesign -dv "$app" 2>&1 | grep -q "TeamIdentifier=$official_team" && was_official=1
     mkdir -p "$state/backups"
-    backup="$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-${installed:-unknown}.app"
+    backup="$state/backups/$(date +%Y%m%d-%H%M%S)-Vorssaint-$backup_kind${installed:-unknown}.app"
     ditto "$app" "$backup"
     say "Saved to $backup"
 fi
@@ -292,7 +314,7 @@ restore() {
 # --- 7. build and install ----------------------------------------------------
 
 step "Building and installing (usually 3–5 minutes)"
-if ! (cd "$work/vorssaint" && ./build.sh --install) >"$work/build.log" 2>&1; then
+if ! (cd "$work/vorssaint" && ./build.sh "${build_flags[@]}") >"$work/build.log" 2>&1; then
     tail -30 "$work/build.log" >&2
     # Most failures are compile errors, long before build.sh touches the
     # installed app; then there is nothing to put back.
@@ -302,7 +324,7 @@ if ! (cd "$work/vorssaint" && ./build.sh --install) >"$work/build.log" 2>&1; the
     fi
     fail "The build failed. Your current app is unchanged."
 fi
-if ! "$app/Contents/MacOS/Vorssaint" --selftest 2>/dev/null | grep -q "SELFTEST OK"; then
+if ! "$app/Contents/MacOS/$executable" --selftest 2>/dev/null | grep -q "SELFTEST OK"; then
     restore
     fail "The installed app failed its self-test. Your previous app is back in place."
 fi
@@ -333,6 +355,17 @@ fi
 
 prune_backups
 mkdir -p "$state"
+if (( separate )); then
+    open "$app"
+    say ""
+    say "✓ Vorssaint (Developer) $target with Castling is running, next to your main app."
+    say ""
+    say "It has its own settings and its own Accessibility and Screen Recording"
+    say "grants, and Vorssaint doesn't check for updates in developer builds."
+    say "Quit your main Vorssaint while using it, so the two don't both run."
+    say "To update it: $here/install --separate <version>"
+    exit 0
+fi
 # Vorssaint's Update button runs this installer from here (patch 02-update-hook).
 printf '%s\n' "$here/install" >"$state/installer"
 printf '{ "version": "%s", "patch": "%s", "installed": "%s" }\n' \
