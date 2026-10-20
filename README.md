@@ -102,6 +102,18 @@ one back, which takes seconds and needs no network:
 ~/castling/install --restore
 ```
 
+## Try a build next to your main app
+
+```sh
+~/castling/install --separate
+```
+
+builds *Vorssaint (Developer)*, Vorssaint's own developer variant, beside your
+main app without touching it. It has its own settings and permissions, and
+Vorssaint doesn't check for updates in developer builds. Quit your main
+Vorssaint while you use it. Name a version or a candidate the usual way, e.g.
+`~/castling/install --separate 3.4.2 --candidate 12`.
+
 ## Go back to the official app
 
 ```sh
