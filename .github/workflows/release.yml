@@ -30,15 +30,4 @@ jobs:
           fetch-depth: 0
 
       - name: Tag newly supported versions
-        run: |
-          python3 -c 'import json; [print(r["version"], r["patch"]) for r in json.load(open("supported.json"))["releases"] if r["status"] == "supported" and r["patch"]]' |
-          while read -r version patch; do
-            git rev-parse -q --verify "refs/tags/$patch" >/dev/null && continue
-            git tag "$patch"
-            git push origin "refs/tags/$patch"
-            echo "Released $patch. Vorssaint's update banner offers it to Castling users; from Terminal: \`~/castling/install $version\`." >"$RUNNER_TEMP/msg.md"
-            if gh issue list --state open --label release --json title \
-                 --jq ".[] | select(.title == \"Vorssaint $version\")" | grep -q .; then
-              tools/watch/notify "$version" "released" "$RUNNER_TEMP/msg.md" --close
-            fi
-          done
+        run: tools/watch/tag-releases
