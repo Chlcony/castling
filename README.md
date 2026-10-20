@@ -35,6 +35,7 @@ Castling is not affiliated with or endorsed by Vorssaint. See [NOTICE.md](NOTICE
 <!-- compat:start -->
 | Vorssaint | Status |
 |---|---|
+| 3.4.2-beta.2 | supported |
 | 3.4.2-beta.1 | supported |
 | 3.4.1 | supported |
 <!-- compat:end -->
