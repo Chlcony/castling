@@ -5,7 +5,11 @@
 # always merges: nothing here merges, tags or publishes anything.
 #
 # Owner switches (Settings › Secrets and variables › Actions › Variables):
-#   TRACK_BETAS   "true" to port pre-releases too. Default off.
+#   TRACK_BETAS          "true" to port pre-releases too. Default off.
+#   AUTO_PUBLISH_CLEAN   "true" to publish clean ports without waiting: the
+#                        patch fit unchanged, every check passed, no AI was
+#                        involved and docs/bugs.md has no open bug. AI ports
+#                        always wait for the owner. Default off.
 # Secrets:
 #   ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN   for the AI port
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID           optional Telegram messages
@@ -168,6 +172,39 @@ jobs:
           echo "url=$url" >>"$GITHUB_OUTPUT"
           echo "number=${url##*/}" >>"$GITHUB_OUTPUT"
 
+      - name: Publish the clean port (AUTO_PUBLISH_CLEAN)
+        if: steps.pr.outputs.url != '' && vars.AUTO_PUBLISH_CLEAN == 'true' && needs.detect.outputs.dry_run != 'true'
+        id: publish
+        continue-on-error: true
+        env:
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          # Only a ready PR: a draft means docs/bugs.md lists an open bug.
+          [[ "$(gh pr view "$NUMBER" --json isDraft --jq .isDraft)" == false ]] || { echo "Draft; waiting for the owner."; exit 0; }
+          gh pr merge "$NUMBER" --merge
+          URL="https://github.com/$GITHUB_REPOSITORY/pull/$NUMBER"
+          cat >"$RUNNER_TEMP/msg.md" <<MSG
+          **Published automatically:** Castling for Vorssaint $VERSION — $URL
+
+          The patch fit unchanged and every check passed, so AUTO_PUBLISH_CLEAN
+          released it without waiting. It is tagged, and the update banner offers it.
+
+          **Check by eye when you can** (tests can't see the panel):
+          - [ ] light panel, dark panel and Dynamic Island look right
+          - [ ] save, apply and delete an arrangement
+          - [ ] starring a display makes it main, and the highlight stays
+          - [ ] applying an arrangement never changes the main display
+
+          If something's wrong: flip its status in supported.json and add the bug to
+          docs/bugs.md; ~/castling/install --restore puts your previous app back.
+          MSG
+          # Before tagging: tag-releases closes the release's thread.
+          tools/watch/notify "$VERSION" "published" "$RUNNER_TEMP/msg.md"
+          git fetch --quiet origin main
+          git switch --quiet --detach origin/main
+          tools/watch/tag-releases
+          echo "published=true" >>"$GITHUB_OUTPUT"
+
       # --- conflict or failure: hand it to the AI port -------------------------
 
       - name: Wait out the hotfix window
@@ -234,7 +271,9 @@ jobs:
       # --- notifications -------------------------------------------------------
 
       - name: "Notify: ready to test and approve"
-        if: needs.detect.outputs.dry_run != 'true' && (steps.pr.outputs.url != '' || steps.aipr.outputs.url != '')
+        if: >-
+          needs.detect.outputs.dry_run != 'true' && steps.publish.outputs.published != 'true' &&
+          (steps.pr.outputs.url != '' || steps.aipr.outputs.url != '')
         env:
           URL: ${{ steps.pr.outputs.url || steps.aipr.outputs.url }}
           NUMBER: ${{ steps.pr.outputs.number || steps.aipr.outputs.number }}

@@ -14,7 +14,10 @@ Design rules and their reasons: `docs/design.md`. Open bugs: `docs/bugs.md`.
   `com.vorssaint.utils` or update feed. Patches and build scripts only.
 - **License: GPL-3.0-or-later.** The patch derives from GPL-3.0-or-later code.
 - **Never merge.** Agents open pull requests; the owner tests and merges every
-  release, including clean applies. This code reconfigures physical displays.
+  release. This code reconfigures physical displays. The one exception is the
+  watcher's own `AUTO_PUBLISH_CLEAN` switch, which only the owner turns on: it
+  publishes a port that fit unchanged with every check passed. Anything an AI
+  touched always waits for the owner.
 - **No release while `docs/bugs.md` lists an open bug.** A PR that marks a
   version `supported` stays a draft until the list is empty.
 - **Do not contact upstream.** No issues, PRs or comments on

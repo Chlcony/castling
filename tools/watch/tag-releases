@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Chlcony
+#
+# Tags every supported version in supported.json that has no release tag yet
+# (<upstream>+<patch set>) and closes its release thread. Run on main after a
+# release is merged: by release.yml when the owner merges, and by the watcher
+# itself after it publishes a clean port, because a merge made with the
+# workflow's own token doesn't start other workflows.
+# Needs GH_TOKEN and GITHUB_REPOSITORY, as in GitHub Actions.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$root"
+git fetch --quiet --tags origin
+
+python3 -c 'import json; [print(r["version"], r["patch"]) for r in json.load(open("supported.json"))["releases"] if r["status"] == "supported" and r["patch"]]' |
+while read -r version patch; do
+    git rev-parse -q --verify "refs/tags/$patch" >/dev/null && continue
+    git tag "$patch"
+    git push --quiet origin "refs/tags/$patch"
+    echo "Tagged $patch"
+    printf 'Released %s. Vorssaint'"'"'s update banner offers it to Castling users; from Terminal: `~/castling/install %s`.\n' \
+        "$patch" "$version" >"${RUNNER_TEMP:-/tmp}/msg.md"
+    if gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=release&per_page=100" \
+         --jq ".[].title" | grep -qxF "Vorssaint $version"; then
+        "$root/tools/watch/notify" "$version" "released" "${RUNNER_TEMP:-/tmp}/msg.md" --close
+    fi
+done
