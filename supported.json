@@ -21,6 +21,13 @@
       "patches": "cl-2026-10-18",
       "patch": "3.4.2-beta.2+cl-2026-10-18",
       "status": "supported"
+    },
+    {
+      "version": "3.4.2",
+      "commit": "833967fd45153fc9dc95651d34c867f5c4aee7f1",
+      "patches": "cl-2026-10-18",
+      "patch": "3.4.2+cl-2026-10-18",
+      "status": "supported"
     }
   ]
 }
